@@ -1,0 +1,21 @@
+#!/system/bin/sh
+# fgc — user-facing CLI shortcut (Magisk overlays system/bin into PATH).
+# Usage: fgc status|list|add|remove|toggle|set|session-start|session-end|icon|diag [...]
+# Env override for tests: FGC_MODULES=/path/to/modules
+# Retry loop: on some devices stat() on module paths flakes while
+# readdir+open keep working — so existence checks use ls+grep, and we retry.
+# Never fail a single miss.
+_base="${FGC_MODULES:-/data/adb/modules}"
+_has_cli() {
+  ls "$1/core" 2>/dev/null | grep -qx 'fgc-cli.sh'
+}
+_try=0
+while [ "$_try" -lt 3 ]; do
+  for _d in "$_base/faagamecore" "$_base/modules_update/faagamecore" "/data/adb/modules_update/faagamecore"; do
+    if _has_cli "$_d"; then exec sh "$_d/core/fgc-cli.sh" "$@"; fi
+  done
+  _try=$((_try+1))
+  sleep 1
+done
+echo "fgc: module faagamecore not found" >&2
+exit 1

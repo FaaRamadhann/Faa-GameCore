@@ -1,0 +1,17 @@
+#!/system/bin/sh
+# fgc-cli — alias of the fgc command (same backend interface).
+# Same transient-proof lookup as ./fgc (readdir, not stat; retried).
+_base="${FGC_MODULES:-/data/adb/modules}"
+_has_cli() {
+  ls "$1/core" 2>/dev/null | grep -qx 'fgc-cli.sh'
+}
+_try=0
+while [ "$_try" -lt 3 ]; do
+  for _d in "$_base/faagamecore" "$_base/modules_update/faagamecore" "/data/adb/modules_update/faagamecore"; do
+    if _has_cli "$_d"; then exec sh "$_d/core/fgc-cli.sh" "$@"; fi
+  done
+  _try=$((_try+1))
+  sleep 1
+done
+echo "fgc-cli: module faagamecore not found" >&2
+exit 1

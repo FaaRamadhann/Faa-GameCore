@@ -1,0 +1,3 @@
+# FGC blacklist — one package per line, exact match.
+# Lines starting with # or ! are comments/disabled entries.
+# Example (disabled): !com.example.backgroundapp

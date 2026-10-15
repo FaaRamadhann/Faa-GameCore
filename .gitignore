@@ -1,0 +1,4 @@
+build/*.zip
+temp/
+tests/*.log
+*.bak

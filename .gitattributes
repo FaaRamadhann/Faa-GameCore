@@ -1,0 +1,15 @@
+# Keep LF endings for everything executed on-device or parsed strictly.
+*.sh text eol=lf
+*.prop text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.py text eol=lf
+*.java text eol=lf
+*.bat text eol=crlf
+# Binaries must never be converted.
+*.dex binary
+*.zip binary
+*.png binary

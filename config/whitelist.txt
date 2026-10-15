@@ -1,0 +1,6 @@
+# FGC whitelist — takes precedence over blacklist. Never cleaned.
+# Universal seed: only OS-critical packages valid on every ROM.
+# The installer/boot recovery appends the DETECTED launcher for this device.
+android
+com.android.systemui
+com.android.phone

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>FGC — Faa GameCore</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" aria-label="Navigasi utama">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M6 9h12a4 4 0 0 1 4 4v1a4 4 0 0 1-7 2.6L13.6 15h-3.2L9 16.6A4 4 0 0 1 2 14v-1a4 4 0 0 1 4-4Z" stroke="#fff" stroke-width="1.8"/><circle cx="9" cy="12.5" r="1.2" fill="#fff"/><circle cx="15" cy="12.5" r="1.2" fill="#fff"/></svg>
+      </div>
+      <div><b>FGC</b><small>Faa GameCore</small></div>
+    </div>
+    <nav class="nav" id="sideNav"></nav>
+    <div class="nav-sep">Lanjutan</div>
+    <nav class="nav" id="sideNav2"></nav>
+    <div class="device"><b id="devModel">Unknown</b><span id="devSub">Unknown • Android Unknown</span><br><span id="devRoot"><span id="devRootTx">Root: Not detected</span> • <span class="mono" id="devVer">v1.0.0</span></span><br><span id="backendBadge" class="mono" style="font-size:11px"></span></div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div><h1 id="pageTitle">Home</h1><p id="pageSub">Ringkasan status dan sesi game</p></div>
+      <div class="status-chips">
+        <span class="chip" id="chipCore"><span class="dot"></span><span id="chipCoreTx">…</span></span>
+        <span class="chip info" id="chipProf">PROFILE: …</span>
+        <span class="chip info mono" id="chipVer">v…</span>
+        <button class="btn ghost" id="btnRefresh" style="min-height:40px;padding:8px 14px">Refresh</button>
+      </div>
+    </div>
+
+    <section class="page" id="page-home">
+      <div class="grid">
+        <div class="card"><h2>Game Session</h2><div class="sub">Status game yang sedang berjalan</div><div id="sessBox"></div></div>
+        <div class="grid two">
+          <div class="card"><h2>FGC Core</h2><div class="sub">Status service</div><div id="coreBox"></div></div>
+          <div class="card"><h2>Game Detection</h2><div class="sub">Mode deteksi foreground</div><div id="detBox"></div></div>
+        </div>
+        <div class="card"><h2>Profile Selector</h2><div class="sub">Profil cleanup aktif</div><div class="profiles" id="profRow"></div></div>
+        <div class="card"><h2>Recent Activity</h2><div class="sub">Aktivitas terakhir dari session log</div><div id="recentBox"></div>
+          <div class="row-actions"><button class="btn ghost" data-nav="logs">Buka Session Logs</button></div></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-games">
+      <div class="card"><h2>Gamelist</h2><div class="sub">Game terdaftar — cleanup hanya berjalan saat salah satu game ini foreground</div>
+        <div class="tabs" id="tabsGames" role="tablist" aria-label="Filter tipe aplikasi"><button class="tab active" data-t="user">User App</button><button class="tab" data-t="system">System App</button></div>
+        <input type="text" class="search" id="qGames" placeholder="Cari game…" aria-label="Cari game">
+        <div class="applist" id="gamesList"></div></div>
+    </section>
+
+    <section class="page" id="page-white">
+      <div class="card"><h2>Whitelist</h2><div class="sub">Aplikasi yang tidak disentuh FGC — prioritas di atas blacklist</div>
+        <div class="tabs" id="tabsWhite" role="tablist" aria-label="Filter tipe aplikasi"><button class="tab active" data-t="user">User App</button><button class="tab" data-t="system">System App</button></div>
+        <input type="text" class="search" id="qWhite" placeholder="Search installed apps…" aria-label="Cari whitelist">
+        <div class="applist" id="whiteList"></div></div>
+    </section>
+
+    <section class="page" id="page-black">
+      <div class="card"><h2>Blacklist</h2><div class="sub">Target cleanup — hanya dieksekusi saat sesi game, bukan saat toggle dinyalakan</div>
+        <div class="tabs" id="tabsBlack" role="tablist" aria-label="Filter tipe aplikasi"><button class="tab active" data-t="user">User App</button><button class="tab" data-t="system">System App</button></div>
+        <input type="text" class="search" id="qBlack" placeholder="Search installed apps…" aria-label="Cari blacklist">
+        <div class="applist" id="blackList"></div></div>
+    </section>
+
+    <section class="page" id="page-logs">
+      <div class="card"><h2>Session Logs</h2><div class="sub">Sumber persisten: <span class="mono">/data/adb/fgc/logs/session.log</span> (aman dari update modul)</div>
+        <div class="grid two" style="margin-bottom:10px">
+          <input type="text" id="qLogs" placeholder="Cari package / event…" aria-label="Cari log">
+          <select id="fLogs" aria-label="Filter event">
+            <option value="">Semua event</option>
+            <option>GAME_DETECTED</option><option>SESSION_STARTED</option>
+            <option>CLEANUP_SUCCESS</option><option>CLEANUP_SKIPPED</option>
+            <option>CLEANUP_FAILED</option><option>SESSION_ENDED</option>
+            <option>RECOVERY</option><option>CORE_ERROR</option>
+          </select>
+        </div>
+        <div class="logwrap" id="logsBox"></div></div>
+    </section>
+
+    <section class="page" id="page-settings">
+      <div class="card"><h2>Settings</h2><div class="sub">Setiap perubahan disimpan via backend dan dikonfirmasi sebelum UI update</div>
+        <div id="setBox"></div></div>
+    </section>
+
+    <section class="page" id="page-diag">
+      <div class="card"><h2>Diagnostics</h2><div class="sub">Hasil pemeriksaan nyata dari backend — tidak mematikan aplikasi</div>
+        <div class="row-actions" style="margin:0 0 12px"><button class="btn ghost" id="btnDiag">Run Checks</button><button class="btn ghost" id="btnRestart">Restart core</button><button class="btn ghost" id="btnIconProbe">Test icon</button></div>
+        <div id="iconProbeBox"></div>
+        <div id="diagDevBox"></div>
+        <div id="diagBox"></div></div>
+    </section>
+  </main>
+</div>
+
+<nav class="bottomnav" id="botNav" aria-label="Navigasi bawah"></nav>
+<button class="fab-adv" id="fabAdv" aria-label="Menu lanjutan">⋯</button>
+<div class="toast" id="toast" aria-live="polite"></div>
+
+<script src="adapters/backend.js?v=114"></script>
+<script src="app.js?v=114"></script>
+</body>
+</html>
