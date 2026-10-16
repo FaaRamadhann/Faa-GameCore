@@ -184,7 +184,11 @@
   function fetchIcon(img) {
     var pkg = img.dataset.pkg;
     if (!pkg || img.dataset.done) return;
-    img.dataset.done = "1";
+    var tries = parseInt(img.dataset.tries || "0", 10);
+    // Bounded retries: a failed fetch stays retryable across re-renders, but
+    // never more than 3 attempts per image (then the letter avatar stands).
+    if (tries >= 3) { img.dataset.done = "1"; return; }
+    img.dataset.tries = String(tries + 1);
     if (iconCache[pkg]) { showIcon(img, iconCache[pkg]); return; }
     iconQueue.push(img);
     pumpIcons();
@@ -223,6 +227,7 @@
     }).catch(function () {});
   }
   function showIcon(img, url) {
+    img.dataset.done = "1";
     img.src = url;
     img.style.display = "block";
     var letter = img.parentNode.querySelector("span");

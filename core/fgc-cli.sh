@@ -14,6 +14,45 @@ CORE_DIR="$MODDIR/core"
 
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n\r\t'; }
 
+_glist_ensure() {
+  # Guarantee a usable gamelist.json: heal missing/corrupt files (backup +
+  # reseed) instead of failing every later operation. Reads are retried:
+  # a SINGLE empty read may be a transient FS flake, never wipe on that.
+  # Returns 0 when the file is usable afterwards.
+  _gf="$FGC_CONFIG/gamelist.json"
+  _i=0
+  while [ "$_i" -lt 3 ]; do
+    _g="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
+    case "$_g" in *'"games"'*) return 0 ;; esac
+    _i=$((_i+1)); sleep 1
+  done
+  cp "$_gf" "$_gf.bak" 2>/dev/null
+  printf '{"games":[]}' > "$_gf" 2>/dev/null || return 1
+  fgc_log "CORE_ERROR" "" "gamelist" "rescued" "missing-or-corrupt"
+  return 0
+}
+
+_list_filter() {
+  # $1=file $2=exact-pkg: drop pkg + !pkg lines, ATOMIC via tmp+rename.
+  # Every stage is status-checked: a failed read must NEVER truncate the file
+  # (grep -v exits 1 on empty-but-valid output, which is fine).
+  _lf="$1"
+  _le="$(printf '%s' "$2" | sed 's/\./\\./g')"
+  grep -v "^$_le$" "$_lf" 2>/dev/null | grep -v "^!$_le$" > "$_lf.tmp"
+  _grc=$?
+  if [ "$_grc" -gt 1 ]; then rm -f "$_lf.tmp" 2>/dev/null; return 1; fi
+  mv "$_lf.tmp" "$_lf" 2>/dev/null || return 1
+}
+
+_list_append() {
+  # $1=file $2=line: atomic append. The baseline MUST be readable first —
+  # appending blind onto an unreadable file would silently drop content.
+  _lf="$1"
+  _o="$(cat "$_lf" 2>/dev/null)" || return 1
+  { [ -n "$_o" ] && printf '%s\n' "$_o"; printf '%s\n' "$2"; } > "$_lf.tmp" 2>/dev/null || return 1
+  mv "$_lf.tmp" "$_lf" 2>/dev/null || return 1
+}
+
 # Java helper (tools/java/FgcPm.java -> bin/fgc-pm.dex): real PackageManager
 # labels/icons on every ROM. Absent/unrunnable -> pm/dumpsys fallback.
 # NOTE: no `[ -f dex ]` pre-check here — stat() on module paths flakes on some
@@ -73,7 +112,9 @@ cmd_status() {
 cmd_list() { # list [games|blacklist|whitelist|logs|packages] (bare = games)
   [ -z "$1" ] && set -- games
   case "$1" in
-    games) cat "$FGC_CONFIG/gamelist.json" 2>/dev/null || echo '{"error":"gamelist-missing"}' ;;
+    games)
+      _glist_ensure 2>/dev/null || { echo '{"error":"gamelist-missing"}'; return 1; }
+      cat "$FGC_CONFIG/gamelist.json" 2>/dev/null || echo '{"error":"gamelist-missing"}' ;;
     blacklist) fgc_each_all "$FGC_CONFIG/blacklist.txt" ;;
     whitelist) fgc_each_all "$FGC_CONFIG/whitelist.txt" ;;
     logs) tail -n 100 "$FGC_LOGS/session.log" 2>/dev/null || true ;;
@@ -139,39 +180,50 @@ cmd_add() { # add <games|blacklist|whitelist> <package> [label...] [profile]
   [ -z "$_label" ] && _label="$_p"
   case "$_t" in
     games)
+      _glist_ensure || { echo '{"error":"add-failed"}'; return 1; }
       grep -q "\"$_p\"" "$FGC_CONFIG/gamelist.json" 2>/dev/null && { echo '{"error":"duplicate"}'; return 1; }
       _l="$(jesc "$_label")"
-      python3 - "$FGC_CONFIG/gamelist.json" "$_p" "$_l" "$_prof" 2>/dev/null <<'EOF' || {
+      _gf="$FGC_CONFIG/gamelist.json"; _tmp="$_gf.tmp"
+      _ok=0
+      if python3 - "$_gf" "$_tmp" "$_p" "$_l" "$_prof" 2>/dev/null <<'EOF'
 import json,sys
-f,pkg,label,prof=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4]
+f,t,pkg,label,prof=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5]
 try: d=json.load(open(f))
 except: d={"games":[]}
 d.setdefault("games",[]).append({"package":pkg,"label":label,"profile":int(prof or 0)})
-json.dump(d,open(f,"w"),indent=1)
+json.dump(d,open(t,"w"),indent=1)
 EOF
+      then
+        grep -q "\"$_p\"" "$_tmp" 2>/dev/null && _ok=1
+      fi
+      if [ "$_ok" = "0" ]; then
         # fallback without python (on-device: python3 never exists, THIS is the
         # real path): append into the games array, empty or not. Normalized to
         # single-line first so pretty-printed files work too.
-        _tmp="$FGC_CONFIG/gamelist.json.tmp"
         _esc="$(printf '%s' "$_l" | sed 's/[\/&|\\]/\\&/g')"
-        _one="$(tr -d '\n\r' < "$FGC_CONFIG/gamelist.json" 2>/dev/null)"
+        _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
         _new='{"package": "'$_p'", "label": "'$_esc'", "profile": '${_prof:-0}'}'
         if printf '%s' "$_one" | grep -q '"games"[ ]*:[ ]*\[[ ]*\]'; then
-          printf '%s' "$_one" | sed "s/\"games\"[ ]*:[ ]*\[[ ]*\]/\"games\": [$_new]/" > "$_tmp" && mv "$_tmp" "$FGC_CONFIG/gamelist.json" || { echo '{"error":"add-failed"}'; return 1; }
+          printf '%s' "$_one" | sed "s/\"games\"[ ]*:[ ]*\[[ ]*\]/\"games\": [$_new]/" > "$_tmp" 2>/dev/null \
+            && grep -q "\"$_p\"" "$_tmp" 2>/dev/null && _ok=1
         elif printf '%s' "$_one" | grep -q '"games"'; then
-          printf '%s' "$_one" | sed "s/\(.*\)\]}[[:space:]]*\$/\1, $_new]}/" > "$_tmp" && mv "$_tmp" "$FGC_CONFIG/gamelist.json" || { echo '{"error":"add-failed"}'; return 1; }
-        else
-          echo '{"error":"add-failed"}'; return 1
+          printf '%s' "$_one" | sed "s/\(.*\)\]}[[:space:]]*\$/\1, $_new]}/" > "$_tmp" 2>/dev/null \
+            && grep -q "\"$_p\"" "$_tmp" 2>/dev/null && _ok=1
         fi
-      }
+      fi
+      if [ "$_ok" = "1" ]; then
+        mv "$_tmp" "$_gf" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null; echo '{"error":"add-failed"}'; return 1; }
+      else
+        rm -f "$_tmp" 2>/dev/null; echo '{"error":"add-failed"}'; return 1
+      fi
       fgc_log "SESSION_STARTED" "$_p" "gamelist-add" "added" ""
       echo '{"ok":true}' ;;
     blacklist|whitelist)
       _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
       grep -qx "$_p" "$_f" 2>/dev/null && { echo '{"error":"duplicate"}'; return 1; }
-      # remove disabled twin line then append
-      grep -v "^$_p$" "$_f" 2>/dev/null | grep -v "^!$_p$" > "$_f.tmp"; mv "$_f.tmp" "$_f"
-      printf '%s\n' "$_p" >> "$_f"
+      # remove disabled twin line then append — both atomic, both verified
+      _list_filter "$_f" "$_p" || { echo '{"error":"add-failed"}'; return 1; }
+      _list_append "$_f" "$_p" || { echo '{"error":"add-failed"}'; return 1; }
       echo '{"ok":true}' ;;
     *) echo '{"error":"unknown target"}'; return 1 ;;
   esac
@@ -182,29 +234,38 @@ cmd_remove() { # remove <games|blacklist|whitelist> <package>
   valid_pkg "$_p" || { echo '{"error":"invalid package"}'; return 1; }
   case "$_t" in
     games)
-      python3 - "$FGC_CONFIG/gamelist.json" "$_p" 2>/dev/null <<'EOF' || {
+      _glist_ensure || { echo '{"error":"remove-failed"}'; return 1; }
+      _gf="$FGC_CONFIG/gamelist.json"; _gtmp="$_gf.tmp"
+      _ok=0
+      if python3 - "$_gf" "$_gtmp" "$_p" 2>/dev/null <<'EOF'
 import json,sys
-f,pkg=sys.argv[1],sys.argv[2]
+f,t,pkg=sys.argv[1],sys.argv[2],sys.argv[3]
 d=json.load(open(f)); d["games"]=[g for g in d.get("games",[]) if g.get("package")!=pkg]
-json.dump(d,open(f,"w"),indent=1)
+json.dump(d,open(t,"w"),indent=1)
 EOF
+      then
+        grep -q '"games"' "$_gtmp" 2>/dev/null && _ok=1
+      fi
+      if [ "$_ok" = "0" ]; then
         # fallback without python: exact-object surgery (line-based delete
         # would nuke the whole file when JSON is single-line). Normalized
         # first; two expressions instead of one \{0,1\} interval (toybox sed
         # lacks intervals): first strips a mid-list object incl. its comma,
         # second strips a last/only object; then collapse a leftover ", ]".
-        _gf="$FGC_CONFIG/gamelist.json"
         _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
         _re="$(printf '%s' "$_p" | sed 's/\./\\./g')"
-        printf '%s' "$_one" | sed -e "s/{\"package\": \"$_re\"[^}]*\}, *//" -e "s/{\"package\": \"$_re\"[^}]*\}//" -e "s/, *\]/]/" > "$_gf.tmp" 2>/dev/null \
-          && grep -q '"games"' "$_gf.tmp" 2>/dev/null \
-          && mv "$_gf.tmp" "$_gf" || { rm -f "$_gf.tmp"; echo '{"error":"remove-failed"}'; return 1; }
-      }
+        printf '%s' "$_one" | sed -e "s/{\"package\": \"$_re\"[^}]*\}, *//" -e "s/{\"package\": \"$_re\"[^}]*\}//" -e "s/, *\]/]/" > "$_gtmp" 2>/dev/null \
+          && grep -q '"games"' "$_gtmp" 2>/dev/null && _ok=1
+      fi
+      if [ "$_ok" = "1" ]; then
+        mv "$_gtmp" "$_gf" 2>/dev/null || { rm -f "$_gtmp" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1; }
+      else
+        rm -f "$_gtmp" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1
+      fi
       echo '{"ok":true}' ;;
     blacklist|whitelist)
       _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
-      grep -v "^$_p$" "$_f" 2>/dev/null > "$_f.tmp"; mv "$_f.tmp" "$_f"
-      echo '{"ok":true}' ;;
+      _list_filter "$_f" "$_p" && echo '{"ok":true}' || echo '{"error":"remove-failed"}' ;;
     *) echo '{"error":"unknown target"}'; return 1 ;;
   esac
 }
@@ -213,8 +274,9 @@ cmd_toggle() { # toggle <blacklist|whitelist> <package> on|off  (off = prefix !)
   _t="$1"; _p="$2"; _s="$3"
   valid_pkg "$_p" || { echo '{"error":"invalid package"}'; return 1; }
   _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
-  grep -v "^$_p$" "$_f" 2>/dev/null | grep -v "^!$_p$" > "$_f.tmp"; mv "$_f.tmp" "$_f"
-  if [ "$_s" = "on" ]; then printf '%s\n' "$_p" >> "$_f"; else printf '!%s\n' "$_p" >> "$_f"; fi
+  _list_filter "$_f" "$_p" || { echo '{"error":"toggle-failed"}'; return 1; }
+  if [ "$_s" = "on" ]; then _list_append "$_f" "$_p" || { echo '{"error":"toggle-failed"}'; return 1; }
+  else _list_append "$_f" "!$_p" || { echo '{"error":"toggle-failed"}'; return 1; }; fi
   echo '{"ok":true}'
 }
 
@@ -226,28 +288,35 @@ cmd_set() { # set <key> <value> | set profile <1..4> [package]
     if [ -n "$_pkg" ] && [ "$_pv" = "0" ]; then :; elif [ -z "$_pkg" ] && [ "$_pv" = "0" ]; then echo '{"error":"invalid profile"}'; return 1; fi
     if [ -n "$_pkg" ]; then
       valid_pkg "$_pkg" || { echo '{"error":"invalid package"}'; return 1; }
+      _glist_ensure || { echo '{"error":"set-failed"}'; return 1; }
       grep -q "\"package\"[ ]*:[ ]*\"$_pkg\"" "$FGC_CONFIG/gamelist.json" 2>/dev/null \
         || { echo '{"error":"not-a-game"}'; return 1; }
-      if python3 - "$FGC_CONFIG/gamelist.json" "$_pkg" "$_pv" 2>/dev/null <<'EOF'
+      _gf="$FGC_CONFIG/gamelist.json"; _gtmp="$_gf.tmp"
+      _ok=0
+      if python3 - "$_gf" "$_gtmp" "$_pkg" "$_pv" 2>/dev/null <<'EOF'
 import json,sys
-f,pkg,pv=sys.argv[1],sys.argv[2],int(sys.argv[3])
+f,t,pkg,pv=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
 d=json.load(open(f))
 for g in d.get("games",[]):
   if g.get("package")==pkg: g["profile"]=pv
-json.dump(d,open(f,"w"),indent=1)
+json.dump(d,open(t,"w"),indent=1)
 EOF
       then
-        echo '{"ok":true}'
-      else
+        grep -q "\"package\": \"$_pkg\"[^}]*\"profile\": $_pv" "$_gtmp" 2>/dev/null && _ok=1
+      fi
+      if [ "$_ok" = "0" ]; then
         # fallback without python: rewrite ONLY the profile digits inside the
         # target object (label untouched). Normalized single-line first.
-        _gf="$FGC_CONFIG/gamelist.json"
         _re="$(printf '%s' "$_pkg" | sed 's/\./\\./g')"
         _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
-        printf '%s' "$_one" | sed "s/\({\"package\": \"$_re\"[^}]*\"profile\": \)[0-9][0-9]*/\1$_pv/" > "$_gf.tmp" 2>/dev/null \
-          && grep -q "\"package\": \"$_re\"[^}]*\"profile\": $_pv" "$_gf.tmp" 2>/dev/null \
-          && mv "$_gf.tmp" "$_gf" && echo '{"ok":true}' \
-          || { rm -f "$_gf.tmp"; echo '{"error":"set-failed"}'; return 1; }
+        printf '%s' "$_one" | sed "s/\({\"package\": \"$_re\"[^}]*\"profile\": \)[0-9][0-9]*/\1$_pv/" > "$_gtmp" 2>/dev/null \
+          && grep -q "\"package\": \"$_re\"[^}]*\"profile\": $_pv" "$_gtmp" 2>/dev/null && _ok=1
+      fi
+      if [ "$_ok" = "1" ]; then
+        mv "$_gtmp" "$_gf" 2>/dev/null || { rm -f "$_gtmp" 2>/dev/null; echo '{"error":"set-failed"}'; return 1; }
+        echo '{"ok":true}'
+      else
+        rm -f "$_gtmp" 2>/dev/null; echo '{"error":"set-failed"}'; return 1
       fi
     else
       fgc_cfg_set default_profile "$_pv" && echo '{"ok":true}' || echo '{"error":"set-failed"}'
@@ -265,6 +334,7 @@ cmd_session() {
   case "$1" in
     session-start)
       valid_pkg "$2" || { echo '{"error":"invalid package"}'; return 1; }
+      _glist_ensure 2>/dev/null || { echo '{"error":"not-a-game"}'; return 1; }
       grep -q "\"package\"[ ]*:[ ]*\"$2\"" "$FGC_CONFIG/gamelist.json" 2>/dev/null \
         || { echo '{"error":"not-a-game"}'; return 1; }
       FGC_GAME="$2" fgc_session_start "$2" && echo '{"ok":true}' ;;

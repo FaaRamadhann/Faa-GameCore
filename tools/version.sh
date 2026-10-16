@@ -1,5 +1,7 @@
 #!/system/bin/sh
-# version.sh — bump PATCH version. Usage: version.sh [major|minor|patch] (default patch)
+# version.sh — bump version. Usage: version.sh [major|minor|patch] (default patch)
+# Project rule (do NOT forget): single-digit patch rollover.
+#   1.1.9 -> next patch is 1.2.0 (NOT 1.1.10); ... 1.2.9 -> 1.3.0, etc.
 cd "${0%/*}/.." || exit 1
 PROP=module.prop
 VER=$(grep -m1 '^version=' $PROP | cut -d= -f2)
@@ -8,7 +10,7 @@ MAJ=$(echo "$VER" | cut -d. -f1); MIN=$(echo "$VER" | cut -d. -f2); PAT=$(echo "
 case "${1:-patch}" in
   major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
   minor) MIN=$((MIN+1)); PAT=0 ;;
-  *) PAT=$((PAT+1)) ;;
+  *) PAT=$((PAT+1)); if [ "$PAT" -gt 9 ]; then PAT=0; MIN=$((MIN+1)); fi ;;
 esac
 NEW="$MAJ.$MIN.$PAT"; NEWCODE=$((CODE+1))
 sed -i "s/^version=.*/version=$NEW/" $PROP

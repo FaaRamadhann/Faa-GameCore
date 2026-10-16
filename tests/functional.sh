@@ -121,7 +121,8 @@ out=$($CLI set profile 9 com.test.game); ck "reject bad per-game" 'invalid profi
 out=$($CLI list games);        ck "list games has pkg" 'com.test.game' "$out"
 out=$($CLI list);               ck "bare list defaults games" 'com.test.game' "$out"
 mkdir -p "$T/empty/config" "$T/empty/state" "$T/empty/logs"
-out=$(FGC_DATA="$T/empty" $CLI list games); ck "missing gamelist is error" 'gamelist-missing' "$out"
+out=$(FGC_DATA="$T/empty" $CLI list games)
+[[ "$out" == *'"games":[]'* ]] && [ -f "$T/empty/config/gamelist.json" ] && { echo "PASS missing gamelist self-heals"; pass=$((pass+1)); } || { echo "FAIL gamelist heal -- got: $out"; fail=$((fail+1)); }
 out=$($CLI add blacklist com.evil.app);  ck "blacklist add" '"ok":true' "$out"
 out=$($CLI add blacklist com.evil.app);   ck "reject duplicate blacklist" 'duplicate' "$out"
 out=$($CLI add whitelist com.evil.app);   ck "whitelist add" '"ok":true' "$out"
