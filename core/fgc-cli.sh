@@ -16,11 +16,16 @@ jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n\r\t'; }
 
 # Java helper (tools/java/FgcPm.java -> bin/fgc-pm.dex): real PackageManager
 # labels/icons on every ROM. Absent/unrunnable -> pm/dumpsys fallback.
+# NOTE: no `[ -f dex ]` pre-check here — stat() on module paths flakes on some
+# devices while open()+exec keep working; readability is probed open-based
+# and the exec itself IS the final check.
 FGC_DEX="$MODDIR/bin/fgc-pm.dex"
 fgc_java() {
-  [ -f "$FGC_DEX" ] || return 1
   command -v app_process >/dev/null 2>&1 || return 1
-  app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm "$@" 2>/dev/null
+  cat "$FGC_DEX" >/dev/null 2>&1 || return 1
+  _jo="$(app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm "$@" 2>/dev/null)" || return 1
+  [ -n "$_jo" ] || return 1
+  printf '%s' "$_jo"
 }
 
 _fgc_pick_label() {

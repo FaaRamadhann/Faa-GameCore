@@ -310,6 +310,17 @@ FGC_MODDIR="$T/mod2" bash "$T/mod2/core/data_init.sh" "$M" >/dev/null
 FGC_MODDIR="$T/mod2" bash "$T/mod2/core/fgc-cli.sh" status >/dev/null
 if grep -q '"poll_interval_sec":3' "$T/data/config/config.json" && [ -f "$T/data/config/config.json.bak" ]; then echo "PASS corrupt rescue"; pass=$((pass+1)); else echo "FAIL corrupt rescue"; fail=$((fail+1)); fi
 out=$($CLI remove games com.test.game); ck "remove game" '"ok":true' "$out"
+# fail-closed: unreadable whitelist aborts cleanup AND freeze (never fail-open)
+mv "$T/data/config/whitelist.txt" "$T/whitelist.hide"
+. "$M/core/process_manager.sh"
+export FGC_GAME=com.test.game
+printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
+: > "$T/am.log"
+fgc_cleanup com.evil.app >/dev/null
+if grep -q 'force-stop com.evil.app' "$T/am.log"; then echo "FAIL fail-closed cleanup"; fail=$((fail+1)); else echo "PASS fail-closed cleanup"; pass=$((pass+1)); fi
+fgc_freeze com.evil.app >/dev/null
+if grep -q 'disable-user.*com.evil.app' "$T/pm.log"; then echo "FAIL fail-closed freeze"; fail=$((fail+1)); else echo "PASS fail-closed freeze"; pass=$((pass+1)); fi
+mv "$T/whitelist.hide" "$T/data/config/whitelist.txt"
 
 echo "--- $pass pass, $fail fail ---"
 exit $fail

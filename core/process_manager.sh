@@ -36,6 +36,11 @@ fgc_freeze() {
   # force-stop which apps can escape via autostart). User-type ONLY, always —
   # freezing system components risks bootloops and is never worth it.
   # Whitelist/protected/foreground gates identical to cleanup. Respects dry-run.
+  # FAIL-CLOSED like cleanup: unreadable whitelist aborts the whole freeze.
+  if ! cat "$FGC_CONFIG/whitelist.txt" >/dev/null 2>&1; then
+    fgc_log "CORE_ERROR" "" "freeze" "aborted" "whitelist-unreadable"
+    return 0
+  fi
   _game="$FGC_GAME"
   # Snapshot of already-disabled packages (one pm call): we must never
   # "restore" (enable) something the USER disabled on purpose. Only packages
@@ -97,6 +102,14 @@ fgc_unfreeze_all() {
 
 fgc_cleanup() {
   # args: exact package names. Respects dry-run. One force-stop per pkg, no loops.
+  # FAIL-CLOSED: if the whitelist itself is unreadable we must NOT clean —
+  # an unreadable whitelist would otherwise fail-open (treated as empty).
+  # cat is open-based (works where stat() flakes); missing file = same path.
+  if ! cat "$FGC_CONFIG/whitelist.txt" >/dev/null 2>&1; then
+    fgc_log "CORE_ERROR" "" "force-stop" "aborted" "whitelist-unreadable"
+    echo "0 stopped, 0 skipped, 0 failed"
+    return 0
+  fi
   _game="$FGC_GAME"
   _ok=0; _skip=0; _fail=0
   for _p in "$@"; do
