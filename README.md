@@ -119,10 +119,12 @@ tidak pernah memecah state atau menduplikasi daemon.
 - **Update dari versi lama**: mengimpor `config.json`, `gamelist.json`,
   `blacklist.txt`, `whitelist.txt` (+ `session.log`) dari folder modul lama
   sebelum dihapus — file user tidak pernah dioverwrite.
+- Seed hanya bila file BENAR-BENAR tidak ada (terbukti hilang 2× beruntun,
+  bukan sekali baca gagal) — update tidak pernah me-replace data.
 - Backfill key config yang ditambahkan rilis baru (nilai custom tetap),
-  rescue file corrupt (backup `.bak` + reseed).
-- Mengganti `config/`, `state/`, `logs/` di folder modul dengan symlink ke
-  data — seluruh core bekerja tanpa perubahan path.
+  rescue file corrupt (backup `.bak` + reseed, hanya setelah 3× gagal baca).
+- Folder modul TIDAK di-symlink dan TIDAK ditulis core — hanya default bawaan
+  untuk dibaca manusia; semua tulis lewat path absolut kanonis.
 - Uninstall TIDAK menghapus `/data/adb/fgc`; reinstall menemukan datanya lagi.
 
 ## Label & ikon aplikasi (Java helper)

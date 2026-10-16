@@ -102,6 +102,7 @@ check("syncTime" in idx and "visibilitychange" in app, "sync stamp + external-ed
 check("renderPaged" in app and "bindDelegated" in app and "onListChange" in app, "windowed render + delegation")
 check("prefers-reduced-motion" in css, "reduced-motion support")
 check((ROOT/"core/paths.sh").exists(), "canonical paths module")
+check("ln -s" not in (ROOT/"core/data_init.sh").read_text(encoding="utf-8"), "no symlinks in storage")
 check("FGC_CONFIG" in _cl and "FGC_STATE" in _cl, "canonical data paths in CLI")
 check("fgc_run_timed" in (ROOT/"core/str.sh").read_text(encoding="utf-8"), "hang-guard helper")
 check("fgc_daemon_alive" in (ROOT/"core/main.sh").read_text(encoding="utf-8"), "pid-verified stale lock")

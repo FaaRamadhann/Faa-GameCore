@@ -34,9 +34,9 @@ pass=0; fail=0
 bash "$M/core/main.sh" "$M" > "$T/d1.log" 2>&1 &
 DPID=$!
 sleep 4
-if [ -d "$M/state/daemon.lock" ]; then echo "PASS daemon holds lock"; pass=$((pass+1)); else echo "FAIL daemon holds lock"; fail=$((fail+1)); fi
+if [ -d "$T/data/state/daemon.lock" ]; then echo "PASS daemon holds lock"; pass=$((pass+1)); else echo "FAIL daemon holds lock"; fail=$((fail+1)); fi
 wait $DPID
-if [ ! -d "$M/state/daemon.lock" ]; then echo "PASS lock released on exit"; pass=$((pass+1)); else echo "FAIL lock released"; rmdir "$M/state/daemon.lock" 2>/dev/null; fail=$((fail+1)); fi
+if [ ! -d "$T/data/state/daemon.lock" ]; then echo "PASS lock released on exit"; pass=$((pass+1)); else echo "FAIL lock released"; rm -rf "$T/data/state/daemon.lock" 2>/dev/null; fail=$((fail+1)); fi
 if grep -q 'core-started' "$T/data/logs/session.log" 2>/dev/null || grep -q 'core-started' "$M/logs/session.log" 2>/dev/null; then echo "PASS core-started logged"; pass=$((pass+1)); else echo "FAIL core-started logged"; fail=$((fail+1)); fi
 # 2. duplicate start refused while running
 export FGC_MAX_ITER=4

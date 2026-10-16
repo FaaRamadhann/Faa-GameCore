@@ -144,7 +144,7 @@ $CLI remove blacklist com.test.game >/dev/null
 out=$($CLI toggle blacklist com.evil.app off); ck "toggle off" '"ok":true' "$out"
 out=$($CLI list blacklist)
 if [[ "$out" == *'!com.evil.app'* ]] && ! printf '%s\n' "$out" | grep -x 'com.evil.app' >/dev/null; then echo "PASS toggle off removes from active"; pass=$((pass+1)); else echo "FAIL toggle off still active -- got: $out"; fail=$((fail+1)); fi
-if grep -q '^!com.evil.app$' "$M/config/blacklist.txt"; then echo "PASS disabled marker kept"; pass=$((pass+1)); else echo "FAIL disabled marker"; fail=$((fail+1)); fi
+if grep -q '^!com.evil.app$' "$T/data/config/blacklist.txt"; then echo "PASS disabled marker kept"; pass=$((pass+1)); else echo "FAIL disabled marker"; fail=$((fail+1)); fi
 $CLI toggle blacklist com.evil.app on >/dev/null
 # config validation
 out=$($CLI set poll_interval_sec 5);      ck "set poll 5" '"ok":true' "$out"
@@ -164,7 +164,7 @@ $CLI set dry_run true >/dev/null
 fgc_cleanup com.evil.app
 if grep -q com.evil.app "$T/am.log"; then echo "FAIL dry-run called am"; fail=$((fail+1)); else echo "PASS dry-run no force-stop"; pass=$((pass+1)); fi
 $CLI set dry_run false >/dev/null
-rm -f "$M/config/whitelist.txt.bak"; grep -v '^com.evil.app$' "$M/config/whitelist.txt" > "$T/wl" && mv "$T/wl" "$M/config/whitelist.txt"
+rm -f "$T/data/config/whitelist.txt.bak"; grep -v '^com.evil.app$' "$T/data/config/whitelist.txt" > "$T/wl" && mv "$T/wl" "$T/data/config/whitelist.txt"
 fgc_cleanup com.evil.app
 if grep -q 'force-stop com.evil.app' "$T/am.log"; then echo "PASS real cleanup force-stop"; pass=$((pass+1)); else echo "FAIL real cleanup"; fail=$((fail+1)); fi
 # session start = single cleanup (second start is no-op)
@@ -175,7 +175,7 @@ FGC_GAME=com.test.game fgc_session_start com.test.game
 n=$(grep -c force-stop "$T/am.log")
 if [ "$n" -eq 1 ]; then echo "PASS single cleanup per session"; pass=$((pass+1)); else echo "FAIL single cleanup (n=$n)"; fail=$((fail+1)); fi
 fgc_session_end
-[ -f "$M/state/session.lock" ] && { echo "FAIL lock cleared"; fail=$((fail+1)); } || { echo "PASS lock cleared"; pass=$((pass+1)); }
+[ -f "$T/data/state/session.lock" ] && { echo "FAIL lock cleared"; fail=$((fail+1)); } || { echo "PASS lock cleared"; pass=$((pass+1)); }
 # detector + packages + diag + logs
 out=$(bash "$M/core/event_detector.sh"); ck "detector finds game (miui fmt)" 'GAME|com.test.game' "$out"
 out=$(STUB_DUMPSYS=old bash "$M/core/event_detector.sh"); ck "detector finds game (old fmt)" 'GAME|com.test.game' "$out"
@@ -200,7 +200,7 @@ out=$($CLI icon com.test.game)
 out=$($CLI icons com.test.game com.missing.pkg)
 printf '%s\n' "$out" | grep -qx 'com.test.game	aVBORw0KGgo=' && ! printf '%s\n' "$out" | grep -q 'com.missing' && { echo "PASS icons batch"; pass=$((pass+1)); } || { echo "FAIL icons batch -- got: $out"; fail=$((fail+1)); }
 out=$($CLI icon com.test.game 9.9); ck "icon regen on ver change" 'aVBORw0KGgo=' "$out"
-[ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "9.9" ] && { echo "PASS icon ver stored"; pass=$((pass+1)); } || { echo "FAIL icon ver stored"; fail=$((fail+1)); }
+[ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "9.9|g2" ] && { echo "PASS icon ver stored"; pass=$((pass+1)); } || { echo "FAIL icon ver stored"; fail=$((fail+1)); }
 out=$($CLI icon com.test.game 9.9); ck "icon ver cache hit" 'aVBORw0KGgo=' "$out"
 out=$($CLI diag)
 [[ "$out" == *'"javahlp":"yes"'* ]] && { echo "PASS caps javahlp"; pass=$((pass+1)); } || { echo "FAIL caps javahlp"; fail=$((fail+1)); }
@@ -226,13 +226,13 @@ if [ $rc -eq 0 ] && [ -z "$out" ]; then echo "PASS no-dumpsys graceful"; pass=$(
 out=$($CLI session-start com.unknown.app); ck "session-start rejects unlisted" 'not-a-game' "$out"
 printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
 out=$($CLI session-start com.test.game); ck "session-start listed game" '"ok":true' "$out"
-[ -f "$M/state/session.lock" ] && { echo "PASS companion lock held"; pass=$((pass+1)); } || { echo "FAIL companion lock"; fail=$((fail+1)); }
+[ -f "$T/data/state/session.lock" ] && { echo "PASS companion lock held"; pass=$((pass+1)); } || { echo "FAIL companion lock"; fail=$((fail+1)); }
 out=$($CLI session-end); ck "session-end" '"ok":true' "$out"
 # profile differentiation: force-stop honors explicit selection on every
 # profile; freeze stays user-only; Awaken adds one bounded second sweep
 . "$M/core/caps.sh"
 fgc_detect_caps >/dev/null 2>&1
-grep -qx 'com.android.settings' "$M/state/.syspkgs" && { echo "PASS sys snapshot"; pass=$((pass+1)); } || { echo "FAIL sys snapshot"; fail=$((fail+1)); }
+grep -qx 'com.android.settings' "$T/data/state/.syspkgs" && { echo "PASS sys snapshot"; pass=$((pass+1)); } || { echo "FAIL sys snapshot"; fail=$((fail+1)); }
 out=$($CLI add blacklist com.android.settings); ck "blacklist system pkg" '"ok":true' "$out"
 printf 'u0_a1 123 456 com.evil.app\nu0_a1 124 457 com.android.settings\n' > "$T/ps.txt"
 : > "$T/am.log"; : > "$T/pm.log"
@@ -319,18 +319,26 @@ out=$(FGC_MODULES="$T/adb" bash "$M/system/bin/fgc" status)
 out=$(FGC_MODULES="$T/adb" bash "$M/system/bin/fgc-cli" status)
 [[ "$out" == *'"core"'* ]] && { echo "PASS fgc-cli wrapper"; pass=$((pass+1)); } || { echo "FAIL fgc-cli wrapper"; fail=$((fail+1)); }
 if FGC_MODULES="$T/empty" bash "$M/system/bin/fgc" status >/dev/null 2>&1; then echo "FAIL wrapper missing-module"; fail=$((fail+1)); else echo "PASS wrapper missing-module"; pass=$((pass+1)); fi
-# persistence: seeded data + symlinks
+# persistence: seeded data; module dirs stay PLAIN (never symlinked)
 [ -f "$T/data/config/config.json" ] && [ -f "$T/data/config/gamelist.json" ] && { echo "PASS data seeded"; pass=$((pass+1)); } || { echo "FAIL data seeded"; fail=$((fail+1)); }
 for _d in config state logs; do
-  if [ -L "$M/$_d" ] && [ "$(readlink "$M/$_d")" = "$T/data/$_d" ]; then echo "PASS link $_d"; pass=$((pass+1)); else echo "FAIL link $_d"; fail=$((fail+1)); fi
+  if [ ! -L "$M/$_d" ] && [ -d "$M/$_d" ]; then echo "PASS plain dir $_d"; pass=$((pass+1)); else echo "FAIL plain dir $_d"; fail=$((fail+1)); fi
 done
 # simulate module UPDATE: fresh copy + init(old=$M) must keep user data
 mkdir -p "$T/mod2"; cp module.prop "$T/mod2/"; cp -r core config "$T/mod2/"
 FGC_MODDIR="$T/mod2" bash "$T/mod2/core/data_init.sh" "$M"
-[ -L "$T/mod2/config" ] && { echo "PASS update relinked"; pass=$((pass+1)); } || { echo "FAIL update relinked"; fail=$((fail+1)); }
+[ ! -L "$T/mod2/config" ] && { echo "PASS update keeps plain dirs"; pass=$((pass+1)); } || { echo "FAIL update keeps plain dirs"; fail=$((fail+1)); }
 out=$(FGC_MODDIR="$T/mod2" bash "$T/mod2/core/fgc-cli.sh" list blacklist)
 printf '%s\n' "$out" | grep -qx 'com.evil.app' && { echo "PASS blacklist survives update"; pass=$((pass+1)); } || { echo "FAIL blacklist survives -- got: $out"; fail=$((fail+1)); }
-# mirror identity: strip mod2 symlinks (real default dirs) -> must STILL serve data
+# legacy symlink cleanup: pre-refactor installs may carry links shadowing data
+mkdir -p "$T/mod3"; cp module.prop "$T/mod3/"; cp -r core config "$T/mod3/"
+rm -rf "$T/mod3/config" "$T/mod3/state" "$T/mod3/logs"
+ln -s "$T/data/config" "$T/mod3/config"; ln -s "$T/data/state" "$T/mod3/state"; ln -s "$T/data/logs" "$T/mod3/logs"
+FGC_MODDIR="$T/mod3" bash "$T/mod3/core/data_init.sh" "$M"
+if [ ! -L "$T/mod3/config" ] && [ -d "$T/mod3/config" ]; then echo "PASS stray links removed"; pass=$((pass+1)); else echo "FAIL stray links removed"; fail=$((fail+1)); fi
+out=$(FGC_MODDIR="$T/mod3" bash "$T/mod3/core/fgc-cli.sh" list blacklist)
+printf '%s\n' "$out" | grep -qx 'com.evil.app' && { echo "PASS serves data after delink"; pass=$((pass+1)); } || { echo "FAIL serves data after delink -- got: $out"; fail=$((fail+1)); }
+# mirror identity: real default dirs must STILL serve data (canonical paths)
 rm -f "$T/mod2/config" "$T/mod2/state" "$T/mod2/logs"
 mkdir -p "$T/mod2/config" "$T/mod2/state" "$T/mod2/logs"
 cp config/config.json config/gamelist.json config/blacklist.txt config/whitelist.txt "$T/mod2/config/"

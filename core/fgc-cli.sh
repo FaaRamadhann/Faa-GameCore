@@ -348,15 +348,18 @@ cmd_icon() {
   # icon <pkg> [ver] -> base64 PNG (144px) on stdout. Disk-cached under state/icons.
   # Optional ver (app versionName): when it differs from the cached .ver, the
   # icon is regenerated (covers app updates without extra version lookups here).
+  # .ver format is "appver|gGEN": the GEN marker retires caches made by older
+  # renderer generations (e.g. pre-transparency), exactly once.
   valid_pkg "$1" || { echo '{"error":"invalid package"}'; return 1; }
   _cdir="$FGC_STATE/icons"
+  _gen=2
   mkdir -p "$_cdir" 2>/dev/null
   _cf="$_cdir/$1.b64"; _vf="$_cdir/$1.ver"
   if [ -s "$_cf" ]; then
     if [ -z "$2" ]; then cat "$_cf"; return 0; fi
     if [ -f "$_vf" ]; then
       _ov="$(cat "$_vf" 2>/dev/null)"
-      if [ "$_ov" = "$2" ]; then cat "$_cf"; return 0; fi
+      if [ "$_ov" = "$2|g$_gen" ]; then cat "$_cf"; return 0; fi
     fi
     # version unknown (legacy cache) or changed -> regenerate below
   fi
@@ -364,7 +367,7 @@ cmd_icon() {
   case "$_out" in '') echo '{"error":"icon-unavailable"}'; return 1 ;; esac
   case "$_out" in *[!a-zA-Z0-9+/=]*) echo '{"error":"icon-unavailable"}'; return 1 ;; esac
   printf '%s' "$_out" > "$_cf" 2>/dev/null
-  if [ -n "$2" ]; then printf '%s' "$2" > "$_vf" 2>/dev/null; else rm -f "$_vf" 2>/dev/null; fi
+  if [ -n "$2" ]; then printf '%s|g%s' "$2" "$_gen" > "$_vf" 2>/dev/null; else rm -f "$_vf" 2>/dev/null; fi
   printf '%s' "$_out"
 }
 

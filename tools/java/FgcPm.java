@@ -5,7 +5,6 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.drawable.AdaptiveIconDrawable;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -252,11 +251,12 @@ public class FgcPm {
             if (Build.VERSION.SDK_INT >= 26 && d instanceof AdaptiveIconDrawable) {
                 AdaptiveIconDrawable ad = (AdaptiveIconDrawable) d;
                 Drawable bg = ad.getBackground(), fg = ad.getForeground();
+                // Transparent canvas by default (bitmap starts transparent):
+                // a fake white background looks boxed next to real icons.
+                // Missing layers are simply skipped.
                 if (bg != null) {
                     bg.setBounds(0, 0, ICON_PX, ICON_PX);
                     bg.draw(c);
-                } else {
-                    c.drawColor(Color.WHITE);
                 }
                 if (fg != null) {
                     fg.setBounds(0, 0, ICON_PX, ICON_PX);
