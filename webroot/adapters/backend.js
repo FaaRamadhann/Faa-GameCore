@@ -36,10 +36,10 @@
     try {
       if (typeof window.ksu !== "undefined" && window.ksu && typeof window.ksu.exec === "function") {
         var ksu = window.ksu, isWx = false;
-        try { isWx = (typeof ksu.mmrl === "function" && ksu.mmrl()) || typeof ksu.listPackages === "function"; } catch (e) { isWx = false; }
+        try { isWx = (typeof ksu.mmrl === "function") && !!ksu.mmrl(); } catch (e) { isWx = false; }
         return {
           name: isWx ? "ksu (WebUI X)" : "ksu",
-          sync: true, ksu: ksu,
+          sync: true, ksu: ksu, isWx: isWx,
           exec: function (cmd) {
             return toPromise(function () { return ksu.exec(cmd); }).then(function (r) {
               if (r == null) return "";
@@ -110,6 +110,7 @@
     this.mode = "device";
     this.bridge = bridge;
     this.moddir = moddir;
+    this.isWx = !!(bridge && bridge.isWx);
     this.bridgeInfo = bridgeInfo || { found: bridge.name, exec: true, moddir: moddir, perm: "granted" };
   }
   DeviceBackend.prototype._run = function (args) {
@@ -168,7 +169,9 @@
         if (typeof k.getPackagesInfo === "function") {
           for (var i = 0; i < all.length; i += 150) {
             var infos = [];
-            try { infos = JSON.parse(k.getPackagesInfo(all.slice(i, i + 150)) || "[]"); } catch (e) { infos = []; }
+            // Host takes a JSON STRING (verified against real host bytecode:
+            // getPackagesInfo(String)); a raw array coerces to garbage.
+            try { infos = JSON.parse(k.getPackagesInfo(JSON.stringify(all.slice(i, i + 150))) || "[]"); } catch (e) { infos = []; }
             infos.forEach(function (inf) {
               if (!inf || inf.error || !inf.packageName) return;
               if (inf.appLabel && inf.appLabel !== inf.packageName) labels[inf.packageName] = inf.appLabel;
@@ -279,7 +282,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.7",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.8",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

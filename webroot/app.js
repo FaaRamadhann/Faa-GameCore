@@ -250,36 +250,131 @@
     row.appendChild(ic); row.appendChild(meta); row.appendChild(rightEl);
     return row;
   }
-  function switchEl(pkg, on, onFlip, flipMsgs, isOnNow) {
-    // Generic switch: kanan (ON) = add/aktif, kiri (OFF) = remove/nonaktif.
-    // On failure: re-read backend first (transient exec flakes are common on
-    // real devices) and succeed if the desired state was actually achieved.
+  /* ---------- UI capabilities: adapt to host, screen and device ---------- */
+  var UI = {
+    observer: ("IntersectionObserver" in window),
+    storageOK: (function () {
+      try {
+        var k = "__fgc_probe";
+        localStorage.setItem(k, "1");
+        localStorage.removeItem(k);
+        return true;
+      } catch (e) { return false; }
+    })(),
+    memoryGB: (typeof navigator !== "undefined" && navigator.deviceMemory) || 0,
+    reducedMotion: (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) || false,
+    touch: ("ontouchstart" in window),
+    pageSize: 60
+  };
+  UI.pageSize = (UI.memoryGB && UI.memoryGB <= 2) ? 40 : (UI.memoryGB >= 6 ? 100 : 60);
+  function renderPaged(box, rows, makeRow, emptyHTML) {
+    // Windowed rendering: only the first page lands in the DOM; a sentinel
+    // appends more on scroll. Hundreds of rows no longer rebuild at once.
+    // Without IntersectionObserver: render everything (graceful fallback).
+    if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
+    box.innerHTML = "";
+    if (!rows.length) { box.innerHTML = emptyHTML; return; }
+    var frag = document.createDocumentFragment();
+    var first = UI.observer ? rows.slice(0, UI.pageSize) : rows;
+    first.forEach(function (r) { frag.appendChild(makeRow(r)); });
+    box.appendChild(frag);
+    box._rows = rows; box._shown = first.length; box._makeRow = makeRow;
+    if (UI.observer && rows.length > first.length) {
+      var sent = document.createElement("div");
+      sent.className = "sentinel"; sent.style.cssText = "height:8px";
+      box.appendChild(sent);
+      var obs = new IntersectionObserver(function (ents) {
+        if (ents[0] && ents[0].isIntersecting) growList(box);
+      }, { rootMargin: "600px" });
+      obs.observe(sent);
+      box._sentObs = obs;
+    }
+  }
+  function growList(box) {
+    var rows = box._rows || [], shown = box._shown || 0;
+    if (shown >= rows.length || typeof box._makeRow !== "function") return;
+    var frag = document.createDocumentFragment();
+    rows.slice(shown, shown + UI.pageSize).forEach(function (r) { frag.appendChild(box._makeRow(r)); });
+    var sent = box.querySelector(".sentinel");
+    if (sent) box.insertBefore(frag, sent); else box.appendChild(frag);
+    box._shown = shown + UI.pageSize;
+    if (box._shown >= rows.length) {
+      if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
+      var s2 = box.querySelector(".sentinel");
+      if (s2) s2.remove();
+    }
+  }
+  function bindDelegated(box, handler) {
+    // One listener per list container (survives innerHTML rebuilds),
+    // instead of hundreds of per-row listeners.
+    if (!box || box.dataset.delegated) return;
+    box.addEventListener("change", handler);
+    box.dataset.delegated = "1";
+  }
+  function onListChange(ev) {
+    var el = ev && ev.target;
+    if (!el || !el.dataset) return;
+    if (el.dataset.flip) handleFlip(el);
+    else if (el.dataset.prof !== undefined && el.tagName === "SELECT") handleProfile(el);
+  }
+  function handleFlip(inp) {
+    var want = inp.checked, pkg = inp.dataset.pkg, kind = inp.dataset.flip;
+    var label = inp.dataset.label || pkg;
+    inp.disabled = true;
+    var op, msgs, check;
+    if (kind === "games") {
+      op = function () { return want ? backend.add("games", pkg, label, 0) : backend.remove("games", pkg); };
+      msgs = ["Game ditambahkan", "Game dihapus", "Gagal mengubah gamelist"];
+      check = function () {
+        var g = state.games.filter(function (x) { return x.package === pkg; })[0];
+        return want ? !!g : !g;
+      };
+    } else {
+      var cfgName = kind === "whitelist" ? "Whitelist" : "Blacklist";
+      var extra = kind === "whitelist" ? "dikecualikan dari cleanup" : "memenuhi syarat cleanup";
+      op = function () { return want ? backend.add(kind, pkg) : backend.remove(kind, pkg); };
+      msgs = [cfgName + " ON — " + extra, cfgName + " OFF", "Gagal mengubah " + kind];
+      check = function () {
+        var list = kind === "whitelist" ? state.white : state.black;
+        var e = list.filter(function (x) { return x.pkg === pkg; })[0];
+        return want ? !!(e && e.on) : (!e || !e.on);
+      };
+    }
+    function doneOk(msg) { toast(msg, "ok"); refreshLight(); inp.disabled = false; }
+    function doneFail(msg) { inp.checked = !want; toast(msg, "err"); refreshLight(); inp.disabled = false; }
+    function reconcile(errMsg) {
+      refreshLight().then(function () {
+        var okNow = false;
+        try { okNow = !!check(); } catch (e) { okNow = false; }
+        if (okNow) doneOk(msgs[want ? 0 : 1] + " (terkonfirmasi)");
+        else doneFail(errMsg);
+      }).catch(function () { doneFail(errMsg); });
+    }
+    op().then(function (r) {
+      if (r && (r.ok || !r.error)) { doneOk(msgs[want ? 0 : 1]); }
+      else reconcile((r && r.error) || msgs[2]);
+    }).catch(function (e) {
+      var why = e && e.message ? ": " + e.message : "";
+      reconcile(msgs[2] + why);
+    });
+  }
+  function handleProfile(el) {
+    var pkg = el.dataset.pkg, pv = parseInt(el.value, 10);
+    el.disabled = true;
+    backend.setProfile(pv, pkg).then(function (r) {
+      el.disabled = false;
+      if (r && r.ok) { toast("Profil game disimpan", "ok"); refreshLight(); }
+      else toast("Gagal menyimpan profil", "err");
+    }).catch(function () { el.disabled = false; toast("Backend error", "err"); });
+  }
+  function switchEl(pkg, on, kind, label) {
+    // Listener-free factory: the container's delegated handler does the work.
     var w = document.createElement("label"); w.className = "switch";
     var inp = document.createElement("input"); inp.type = "checkbox"; inp.checked = !!on;
     inp.setAttribute("aria-label", "Toggle " + pkg);
+    inp.dataset.flip = kind; inp.dataset.pkg = pkg; inp.dataset.label = label || pkg;
     var tr = document.createElement("span"); tr.className = "track";
     w.appendChild(inp); w.appendChild(tr);
-    inp.addEventListener("change", function () {
-      var want = inp.checked;
-      inp.disabled = true;
-      function doneOk(msg) { toast(msg, "ok"); refreshLight(); inp.disabled = false; }
-      function doneFail(msg) { inp.checked = !want; toast(msg, "err"); refreshLight(); inp.disabled = false; }
-      function reconcile(errMsg) {
-        refreshLight().then(function () {
-          var okNow = false;
-          try { okNow = !!isOnNow(want); } catch (e) { okNow = false; }
-          if (okNow) doneOk(flipMsgs[want ? 0 : 1] + " (terkonfirmasi)");
-          else doneFail(errMsg);
-        }).catch(function () { doneFail(errMsg); });
-      }
-      onFlip(want).then(function (r) {
-        if (r && (r.ok || !r.error)) { doneOk(flipMsgs[want ? 0 : 1]); }
-        else reconcile((r && r.error) || flipMsgs[2]);
-      }).catch(function (e) {
-        var why = e && e.message ? ": " + e.message : "";
-        reconcile(flipMsgs[2] + why);
-      });
-    });
     return w;
   }
   function labelOf(pkg, fallback) {
@@ -327,20 +422,13 @@
   function profileSelect(pkg, current) {
     var s = document.createElement("select");
     s.setAttribute("aria-label", "Profil per game " + pkg);
+    s.dataset.prof = "1"; s.dataset.pkg = pkg;
     s.style.minHeight = "44px";
     [["0", "Default"], ["1", "1 Balance"], ["2", "2 Perf."], ["3", "3 Awaken"], ["4", "4 Auto"]].forEach(function (o) {
       var op = document.createElement("option");
       op.value = o[0]; op.textContent = o[1];
       if (String(current || 0) === o[0]) op.selected = true;
       s.appendChild(op);
-    });
-    s.addEventListener("change", function () {
-      s.disabled = true;
-      backend.setProfile(parseInt(s.value, 10), pkg).then(function (r) {
-        s.disabled = false;
-        if (r && r.ok) { toast("Profil game disimpan", "ok"); refreshLight(); }
-        else toast("Gagal menyimpan profil", "err");
-      }).catch(function () { s.disabled = false; toast("Backend error", "err"); });
     });
     return s;
   }
@@ -351,14 +439,14 @@
     var rows = sortMembersFirst(universe(members, null).filter(function (r) {
       return inTab(r.pkg, state.tabGames) && matchTerm(r, term);
     }));
-    box.innerHTML = "";
     if (!rows.length) {
+      if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
       box.innerHTML = '<div class="empty"><div class="big">Tidak ada aplikasi</div>' +
         (backend.mode === "preview" && !state.games.length ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat." : "Tidak ada yang cocok di tab ini.") + "</div>";
       return;
     }
     var active = state.status && state.status.game;
-    rows.forEach(function (r) {
+    renderPaged(box, rows, function (r) {
       var label = (r.member && r.member.label) || (r.info && r.info.label) || r.pkg;
       var right = document.createElement("div");
       right.style.display = "flex"; right.style.flexDirection = "column"; right.style.gap = "8px"; right.style.alignItems = "stretch";
@@ -366,14 +454,9 @@
       if (active === r.pkg) tags.push("AKTIF");
       if (r.info && r.info.isGame) tags.push("GAME");
       if (r.info && r.info.version) tags.push("v" + r.info.version);
-      right.appendChild(switchEl(r.pkg, r.on, function (want) {
-        return want ? backend.add("games", r.pkg, label, 0) : backend.remove("games", r.pkg);
-      }, ["Game ditambahkan", "Game dihapus", "Gagal mengubah gamelist"], function (want) {
-        var g = state.games.filter(function (x) { return x.package === r.pkg; })[0];
-        return want ? !!g : !g;
-      }));
+      right.appendChild(switchEl(r.pkg, r.on, "games", label));
       if (r.on && r.member) right.appendChild(profileSelect(r.pkg, r.member.profile));
-      box.appendChild(appRow(label, r.pkg, tags.join(" • "), right));
+      return appRow(label, r.pkg, tags.join(" • "), right);
     });
   }
   function typeOf(pkg) { return state.pkgTypes[pkg] || "unknown"; }
@@ -386,33 +469,27 @@
     var whiteOn = {}, blackOn = {};
     state.white.forEach(function (x) { if (x.on) whiteOn[x.pkg] = 1; });
     state.black.forEach(function (x) { if (x.on) blackOn[x.pkg] = 1; });
-    [["whiteList", "qWhite", state.white, "whitelist", state.tabWhite, blackOn, "dikecualikan dari cleanup", "Whitelist"],
-     ["blackList", "qBlack", state.black, "blacklist", state.tabBlack, whiteOn, "memenuhi syarat cleanup", "Blacklist"]].forEach(function (cfg) {
+    [["whiteList", "qWhite", state.white, "whitelist", state.tabWhite, blackOn],
+     ["blackList", "qBlack", state.black, "blacklist", state.tabBlack, whiteOn]].forEach(function (cfg) {
       var box = $(cfg[0]); var term = ($(cfg[1]).value || "").toLowerCase();
       var members = cfg[2].map(function (x) { return { pkg: x.pkg, on: x.on }; });
       var rows = sortMembersFirst(universe(members, cfg[5]).filter(function (r) {
         return inTab(r.pkg, cfg[4]) && matchTerm(r, term);
       }));
-      box.innerHTML = "";
       if (!rows.length) {
+        if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
         box.innerHTML = '<div class="empty"><div class="big">Tidak ada aplikasi</div>' +
           (backend.mode === "preview" && !members.length ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat." : "Tidak ada yang cocok (entri aktif daftar lawan disembunyikan).") + "</div>";
         return;
       }
-      rows.forEach(function (r) {
+      renderPaged(box, rows, function (r) {
         var label = labelOf(r.pkg);
         var right = document.createElement("div");
         right.style.display = "flex"; right.style.gap = "8px"; right.style.alignItems = "center";
-        right.appendChild(switchEl(r.pkg, r.on, function (want) {
-          return want ? backend.add(cfg[3], r.pkg) : backend.remove(cfg[3], r.pkg);
-        }, [cfg[7] + " ON — " + cfg[6], cfg[7] + " OFF", "Gagal mengubah " + cfg[3]], function (want) {
-          var list = cfg[3] === "whitelist" ? state.white : state.black;
-          var e = list.filter(function (x) { return x.pkg === r.pkg; })[0];
-          return want ? !!(e && e.on) : (!e || !e.on);
-        }));
+        right.appendChild(switchEl(r.pkg, r.on, cfg[3], label));
         var t = typeOf(r.pkg);
         var tag = (r.on ? "ON" : "OFF") + (t !== "unknown" ? " • " + t : "") + (!r.info ? " • tidak terinstal" : "");
-        box.appendChild(appRow(label, r.pkg, tag, right));
+        return appRow(label, r.pkg, tag, right);
       });
     });
   }
@@ -586,6 +663,13 @@
   /* ---------- boot ---------- */
   document.addEventListener("DOMContentLoaded", function () {
     buildNav();
+    // Global UI error boundary: surfaces instead of silent death.
+    window.addEventListener("error", function (ev) {
+      try { toast("UI error: " + ((ev && ev.message) || "unknown"), "err"); } catch (e) {}
+    });
+    bindDelegated($("gamesList"), onListChange);
+    bindDelegated($("whiteList"), onListChange);
+    bindDelegated($("blackList"), onListChange);
     // Debounced, targeted rendering: typing must not rebuild every page.
     function debounce(fn, ms) {
       var t = null;

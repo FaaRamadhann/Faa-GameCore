@@ -92,6 +92,8 @@ check("refreshLight" in app and "loadPackages" in app and "scheduleRetry" in app
 check("reconcile" in app and "terkonfirmasi" in app, "reconcile-on-error for switches")
 check("whitelist-unreadable" in pm, "fail-closed cleanup+freeze")
 check("loadIconBatch" in app and "paintCachedIcons" in app and "icons" in be, "batched icon cache")
+check("renderPaged" in app and "bindDelegated" in app and "onListChange" in app, "windowed render + delegation")
+check("prefers-reduced-motion" in css, "reduced-motion support")
 check((ROOT/"core/paths.sh").exists(), "canonical paths module")
 _cl = (ROOT/"core/fgc-cli.sh").read_text(encoding="utf-8")
 check("FGC_CONFIG" in _cl and "FGC_STATE" in _cl, "canonical data paths in CLI")

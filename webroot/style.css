@@ -72,6 +72,10 @@ body::before{ /* faint stars, static, no animation */
 .chip.info{color:var(--blue-soft)}
 .page{display:none}.page.active{display:block;animation:fade .18s ease}
 @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .page.active{animation:none}
+  .track,.track::after{transition:none}
+}
 .grid{display:grid;gap:14px}
 .grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .card{background:var(--bg-card);border:1px solid var(--blue-border);border-radius:var(--radius-card);

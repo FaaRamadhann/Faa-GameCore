@@ -85,12 +85,16 @@ public class FgcPm {
         }
         Class<?> at = Class.forName("android.app.ActivityThread");
         StringBuilder why = new StringBuilder();
-        Object thread = null;
-        try {
-            thread = at.getMethod("systemMain").invoke(null);
-        } catch (Throwable t) {
-            why.append("systemMain: ").append(shortErr(t)).append("; ");
-            thread = null;
+        // Lightweight manual attach first (less vendor native surface than
+        // systemMain, whose MIUI hooks abort non-deterministically).
+        Object thread = tryManualAttach(at, why);
+        if (thread == null) {
+            try {
+                thread = at.getMethod("systemMain").invoke(null);
+            } catch (Throwable t) {
+                why.append("systemMain: ").append(shortErr(t)).append("; ");
+                thread = null;
+            }
         }
         if (thread == null) {
             try {
@@ -99,33 +103,6 @@ public class FgcPm {
             } catch (Throwable t) {
                 why.append("currentActivityThread: ").append(shortErr(t)).append("; ");
                 thread = null;
-            }
-        }
-        if (thread == null) {
-            // Manual: new ActivityThread() + attach(...). Signature varies by API.
-            try {
-                java.lang.reflect.Constructor<?> ctor = at.getDeclaredConstructor();
-                ctor.setAccessible(true);
-                Object t2 = ctor.newInstance();
-                boolean attached = false;
-                try {
-                    java.lang.reflect.Method m = at.getDeclaredMethod("attach", Boolean.TYPE, Integer.TYPE);
-                    m.setAccessible(true);
-                    m.invoke(t2, Boolean.TRUE, Integer.valueOf(0));
-                    attached = true;
-                } catch (Throwable t1) {
-                    try {
-                        java.lang.reflect.Method m = at.getDeclaredMethod("attach", Boolean.TYPE);
-                        m.setAccessible(true);
-                        m.invoke(t2, Boolean.TRUE);
-                        attached = true;
-                    } catch (Throwable t2x) {
-                        why.append("attach: ").append(shortErr(t1)).append(" / ").append(shortErr(t2x)).append("; ");
-                    }
-                }
-                if (attached) thread = t2;
-            } catch (Throwable t) {
-                why.append("new ActivityThread: ").append(shortErr(t)).append("; ");
             }
         }
         if (thread == null) throw new RuntimeException("no ActivityThread available [" + why + "]");
@@ -149,6 +126,44 @@ public class FgcPm {
         }
         if (ctx == null) throw new RuntimeException("no Context from ActivityThread");
         return ctx.getPackageManager();
+    }
+
+    private static Object tryManualAttach(Class<?> at, StringBuilder why) {
+        // new ActivityThread() + attach(...). Signature varies by API, so try
+        // each shape. system=false keeps it lighter than systemMain().
+        try {
+            java.lang.reflect.Constructor<?> ctor = at.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            Object t2 = ctor.newInstance();
+            String[] shapes = {"ZI", "Z"};
+            Object[][] args = {{Boolean.FALSE, Integer.valueOf(0)}, {Boolean.FALSE}};
+            for (int i = 0; i < shapes.length; i++) {
+                try {
+                    Class<?>[] pt = new Class<?>[shapes[i].length()];
+                    for (int j = 0; j < pt.length; j++) {
+                        pt[j] = shapes[i].charAt(j) == 'Z' ? Boolean.TYPE : Integer.TYPE;
+                    }
+                    java.lang.reflect.Method m = at.getDeclaredMethod("attach", pt);
+                    m.setAccessible(true);
+                    m.invoke(t2, args[i]);
+                    // Verify the context is real before trusting this path;
+                    // otherwise fall through to systemMain.
+                    Object sc = null;
+                    try {
+                        sc = at.getMethod("getSystemContext").invoke(t2);
+                    } catch (Throwable tsc) {
+                        sc = null;
+                    }
+                    if (sc != null) return t2;
+                    why.append("attach").append(shapes[i]).append(": no system context; ");
+                } catch (Throwable t) {
+                    why.append("attach").append(shapes[i]).append(": ").append(shortErr(t)).append("; ");
+                }
+            }
+        } catch (Throwable t) {
+            why.append("new ActivityThread: ").append(shortErr(t)).append("; ");
+        }
+        return null;
     }
 
     private static String shortErr(Throwable t) {
