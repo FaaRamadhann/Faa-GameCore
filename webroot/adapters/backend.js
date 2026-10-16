@@ -258,8 +258,8 @@
       return { ok: true, out: String(r || "") };
     });
   };
-  DeviceBackend.prototype.icon = function (pkg) {
-    return this._run("icon " + pkg).then(function (t) {
+  DeviceBackend.prototype.icon = function (pkg, ver) {
+    return this._run("icon " + pkg + (ver ? " " + ver : "")).then(function (t) {
       t = String(t || "").trim();
       if (!t || t.charAt(0) === "{") return null;
       return "data:image/png;base64," + t;
@@ -299,7 +299,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.9",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.2.2",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

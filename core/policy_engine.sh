@@ -90,11 +90,12 @@ fgc_pkg_type() {
 
 fgc_policy_targets() {
   # $1 = profile (1..4, Auto pre-resolved), $2 = foreground game pkg (may be empty)
-  # Real per-profile behavior (documented, enforced, tested):
-  #   1 Balance     (conservative): user-type targets ONLY; system/unknown skipped.
-  #   2 Performance (standard)    : all active targets, single sweep per session.
-  #   3 Awaken      (aggressive)  : same scope as 2; the session controller adds
-  #                                 ONE bounded second sweep for still-running targets.
+  # Force-stop honors EXPLICIT user selection on every profile: a blacklisted
+  # package is cleaned when running, whatever its type. (System-type caution
+  # lives one layer up: freeze/disable is user-type-only, always.)
+  #   1 Balance     (conservative): force-stop only, no freeze.
+  #   2 Performance (standard)    : force-stop + freeze.
+  #   3 Awaken      (aggressive)  : as 2, plus one bounded second sweep.
   _prof="$1"; _fg="$2"
   for _p in $(fgc_blacklist_active); do
     # exact-match precedence checks
@@ -102,7 +103,6 @@ fgc_policy_targets() {
     if fgc_is_protected "$_p"; then continue; fi
     # never kill the foreground game itself
     if [ -n "$_fg" ] && [ "$_p" = "$_fg" ]; then continue; fi
-    if [ "$_prof" = "1" ] && [ "$(fgc_pkg_type "$_p")" != "user" ]; then continue; fi
     echo "$_p"
   done
 }

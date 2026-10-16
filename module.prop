@@ -1,6 +1,6 @@
 id=faagamecore
 name=Faa GameCore
-version=1.1.9
-versionCode=120
+version=1.2.2
+versionCode=123
 author=Faa Ramadhan
 description=Modul Magisk untuk mengelola aplikasi latar belakang saat bermain game menggunakan blacklist, whitelist, dan deteksi sesi game.

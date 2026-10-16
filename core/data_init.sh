@@ -31,11 +31,11 @@ fgc_migrate_keys() {
     # duplicate-key appends + false corrupt-rescues on-device).
     grep -o -e '"enabled"' -e '"detection_mode"' -e '"poll_interval_sec"' \
       -e '"default_profile"' -e '"cleanup_policy"' -e '"logging"' \
-      -e '"dry_run"' -e '"auto_profile_rules"' "$_mf" 2>/dev/null | sort -u
+      -e '"dry_run"' -e '"freeze_system"' -e '"auto_profile_rules"' "$_mf" 2>/dev/null | sort -u
   }
   _all_present() {
     _have="$(_alt)"
-    for _k in enabled detection_mode poll_interval_sec default_profile cleanup_policy logging dry_run auto_profile_rules; do
+    for _k in enabled detection_mode poll_interval_sec default_profile cleanup_policy logging dry_run freeze_system auto_profile_rules; do
       case "$_have" in *"\"$_k\""*) ;; *) return 1 ;; esac
     done
     return 0
@@ -55,6 +55,7 @@ fgc_migrate_keys() {
   _add_key cleanup_policy '"balanced"'
   _add_key logging true
   _add_key dry_run false
+  _add_key freeze_system false
   _add_key auto_profile_rules '{"note":"Auto picks Performance when a listed game is foreground, else Balance. No AI claims.","game_foreground":2,"idle":1}'
   _all_present
 }
@@ -86,7 +87,7 @@ fgc_data_init() {
       cp "$FGC_DATA/config/config.json" "$FGC_DATA/config/config.json.bak" 2>/dev/null
       # embedded defaults (= shipped config/config.json): the module dir may
       # already be a symlink to this very file, so it cannot serve as seed
-      printf '%s' '{"enabled":true,"detection_mode":"hybrid","poll_interval_sec":3,"default_profile":1,"cleanup_policy":"balanced","logging":true,"dry_run":false,"auto_profile_rules":{"note":"Auto picks Performance when a listed game is foreground, else Balance. No AI claims.","game_foreground":2,"idle":1}}' \
+      printf '%s' '{"enabled":true,"detection_mode":"hybrid","poll_interval_sec":3,"default_profile":1,"cleanup_policy":"balanced","logging":true,"dry_run":false,"freeze_system":false,"auto_profile_rules":{"note":"Auto picks Performance when a listed game is foreground, else Balance. No AI claims.","game_foreground":2,"idle":1}}' \
         > "$FGC_DATA/config/config.json" 2>/dev/null || true
     }
   fi

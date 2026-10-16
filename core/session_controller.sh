@@ -6,17 +6,24 @@ CORE_DIR="$FGC_MODDIR/core"
 . "$CORE_DIR/policy_engine.sh"
 . "$CORE_DIR/process_manager.sh"
 . "$CORE_DIR/config_manager.sh"
+. "$CORE_DIR/device.sh"
 . "$CORE_DIR/paths.sh"
 
 LOCK="$FGC_STATE/session.lock"
 
 fgc_profile_for() {
-  # $1 = game pkg. Resolves Auto(4) -> 2 if game foreground else 1. Per-game profile overrides default.
+  # $1 = game pkg. Per-game profile overrides default; 0/empty = default.
+  # Auto(4) resolves by BATTERY level (user rule): 1-20 -> Balance(1),
+  # 21-50 -> Performance(2), 51-100 -> Awaken(3). Unknown battery -> Balance.
   _g="$1"
   _prof="$(grep -o "\"package\"[ ]*:[ ]*\"$_g\"[^}]*\"profile\"[ ]*:[ ]*[0-9]" "$FGC_CONFIG/gamelist.json" 2>/dev/null | grep -o '[0-9]$' | head -n1)"
   [ -z "$_prof" ] || [ "$_prof" = "0" ] && _prof="$(fgc_cfg_get default_profile 2>/dev/null || echo 1)"
   if [ "$_prof" = "4" ]; then
-    if [ -n "$_g" ]; then echo 2; else echo 1; fi
+    _batt="$(fgc_battery_pct 2>/dev/null)"
+    if [ -z "$_batt" ]; then echo 1
+    elif [ "$_batt" -le 20 ]; then echo 1
+    elif [ "$_batt" -le 50 ]; then echo 2
+    else echo 3; fi
   else echo "$_prof"; fi
 }
 
@@ -36,25 +43,21 @@ fgc_session_start() {
   fgc_log "GAME_DETECTED" "$_g" "detect" "info" ""
   fgc_log "SESSION_STARTED" "$_g" "session" "profile-$_prof" ""
   export FGC_GAME="$_g"
+  export FGC_PROFILE="$_prof"
   _targets="$(fgc_policy_targets "$_prof" "$_g")"
-  # Balance transparency: log conservative-scope exclusions (other filters
-  # stay silent as before; only the profile-specific cut is reported).
-  if [ "$_prof" = "1" ]; then
-    for _sp in $(fgc_blacklist_active); do
-      fgc_is_whitelisted "$_sp" && continue
-      fgc_is_protected "$_sp" && continue
-      if [ -n "$_g" ] && [ "$_sp" = "$_g" ]; then continue; fi
-      if [ "$(fgc_pkg_type "$_sp")" != "user" ]; then
-        fgc_log "CLEANUP_SKIPPED" "$_sp" "force-stop" "skipped" "system-type-balance"
-      fi
-    done
+  # Per-profile action matrix (user-defined):
+  #   1 Balance     = Normal: session tracked, NO force-stop, NO freeze.
+  #   2 Performance = force-stop blacklist, no freeze/unfreeze involved.
+  #   3 Awaken      = force-stop + freeze, unfreezed at session end.
+  _sum="no action (balance normal)"
+  if [ "$_prof" != "1" ]; then
+    # shellcheck disable=SC2086 — word splitting on exact package lines intended
+    _sum="$(fgc_cleanup $_targets)"
   fi
-  # shellcheck disable=SC2086 — word splitting on exact package lines intended
-  _sum="$(fgc_cleanup $_targets)"
-  # Freeze (P2/P3 only): disable-user AFTER force-stop so targets cannot
+  # Freeze (Awaken only): disable-user AFTER force-stop so targets cannot
   # autostart back mid-session. Fully reversible: unfreezed at session end.
-  # P1 stays force-stop-only (conservative). User-type only (all profiles).
-  if [ "$_prof" = "2" ] || [ "$_prof" = "3" ]; then
+  # User-type only (all profiles); system-type needs freeze_system + Awaken.
+  if [ "$_prof" = "3" ]; then
     # shellcheck disable=SC2086 — word splitting on exact package lines intended
     fgc_freeze $_targets
   fi
@@ -65,7 +68,9 @@ fgc_session_start() {
       if fgc_pkg_running "$_p"; then _again="$_again $_p"; fi
     done
     if [ -n "$_again" ]; then
-      fgc_log "CLEANUP_SUCCESS" "$_g" "second-sweep" "retry-still-running" ""
+      for _rp in $_again; do
+        fgc_log "CLEANUP_SUCCESS" "$_rp" "second-sweep" "retry-still-running" ""
+      done
       _sum2="$(fgc_cleanup $_again)"
       _sum="$_sum; second-sweep: $_sum2"
     fi

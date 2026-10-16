@@ -55,7 +55,18 @@ fgc_freeze() {
     if fgc_is_whitelisted "$_p"; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "whitelisted"; continue; fi
     if fgc_is_protected "$_p"; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "system-protected"; continue; fi
     if [ -n "$_game" ] && [ "$_p" = "$_game" ]; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "foreground-game"; continue; fi
-    if [ "$(fgc_pkg_type "$_p")" != "user" ]; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "system-type-nofreeze"; continue; fi
+    # System-type freeze is opt-in (config freeze_system) AND Awaken-only.
+    # Protected/whitelisted above stay exempt no matter what; unknown type
+    # always skips (cannot prove user-type). Default OFF = old behavior.
+    _ptype="$(fgc_pkg_type "$_p")"
+    if [ "$_ptype" != "user" ]; then
+      if [ "$_ptype" = "system" ] && [ "${FGC_PROFILE:-2}" = "3" ]; then
+        _fs="$(fgc_cfg_get freeze_system 2>/dev/null)"
+        [ "$_fs" = "true" ] || { fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "system-type-nofreeze"; continue; }
+      else
+        fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "system-type-nofreeze"; continue
+      fi
+    fi
     if fgc_dry_run; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "dry-run"; continue; fi
     if grep -qx "package:$_p" "$_fdl" 2>/dev/null; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "already-disabled"; continue; fi
     if fgc_run_timed 20 pm disable-user --user 0 "$_p" 2>/dev/null; then

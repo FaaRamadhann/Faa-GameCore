@@ -199,6 +199,9 @@ out=$($CLI icon com.test.game)
 [ "$out" = "aVBORw0KGgo=" ] && [ -f "$T/data/state/icons/com.test.game.b64" ] && { echo "PASS icon cache"; pass=$((pass+1)); } || { echo "FAIL icon -- got: $out"; fail=$((fail+1)); }
 out=$($CLI icons com.test.game com.missing.pkg)
 printf '%s\n' "$out" | grep -qx 'com.test.game	aVBORw0KGgo=' && ! printf '%s\n' "$out" | grep -q 'com.missing' && { echo "PASS icons batch"; pass=$((pass+1)); } || { echo "FAIL icons batch -- got: $out"; fail=$((fail+1)); }
+out=$($CLI icon com.test.game 9.9); ck "icon regen on ver change" 'aVBORw0KGgo=' "$out"
+[ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "9.9" ] && { echo "PASS icon ver stored"; pass=$((pass+1)); } || { echo "FAIL icon ver stored"; fail=$((fail+1)); }
+out=$($CLI icon com.test.game 9.9); ck "icon ver cache hit" 'aVBORw0KGgo=' "$out"
 out=$($CLI diag)
 [[ "$out" == *'"javahlp":"yes"'* ]] && { echo "PASS caps javahlp"; pass=$((pass+1)); } || { echo "FAIL caps javahlp"; fail=$((fail+1)); }
 out=$($CLI diag); ck "diag runs" 'session_lock' "$out"
@@ -225,21 +228,25 @@ printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
 out=$($CLI session-start com.test.game); ck "session-start listed game" '"ok":true' "$out"
 [ -f "$M/state/session.lock" ] && { echo "PASS companion lock held"; pass=$((pass+1)); } || { echo "FAIL companion lock"; fail=$((fail+1)); }
 out=$($CLI session-end); ck "session-end" '"ok":true' "$out"
-# profile differentiation: Balance=user-only, Performance=all, Awaken=+2nd sweep
+# profile differentiation: force-stop honors explicit selection on every
+# profile; freeze stays user-only; Awaken adds one bounded second sweep
 . "$M/core/caps.sh"
 fgc_detect_caps >/dev/null 2>&1
 grep -qx 'com.android.settings' "$M/state/.syspkgs" && { echo "PASS sys snapshot"; pass=$((pass+1)); } || { echo "FAIL sys snapshot"; fail=$((fail+1)); }
 out=$($CLI add blacklist com.android.settings); ck "blacklist system pkg" '"ok":true' "$out"
 printf 'u0_a1 123 456 com.evil.app\nu0_a1 124 457 com.android.settings\n' > "$T/ps.txt"
-: > "$T/am.log"
+: > "$T/am.log"; : > "$T/pm.log"
 out=$($CLI set default_profile 1); ck "profile balance" '"ok":true' "$out"
+: > "$T/am.log"
 out=$($CLI session-start com.test.game)
-if grep -q 'force-stop com.evil.app' "$T/am.log" && ! grep -q 'force-stop com.android.settings' "$T/am.log"; then echo "PASS balance user-only"; pass=$((pass+1)); else echo "FAIL balance user-only"; fail=$((fail+1)); fi
-if $CLI list logs | grep -q 'system-type-balance'; then echo "PASS balance skip logged"; pass=$((pass+1)); else echo "FAIL balance skip logged"; fail=$((fail+1)); fi
+if [ -s "$T/am.log" ]; then echo "FAIL balance no-action"; fail=$((fail+1)); else echo "PASS balance no-action"; pass=$((pass+1)); fi
+if ! grep -q 'disable-user' "$T/pm.log"; then echo "PASS balance never freezes"; pass=$((pass+1)); else echo "FAIL balance never freezes"; fail=$((fail+1)); fi
+if $CLI list logs | grep -q 'no action (balance normal)'; then echo "PASS balance logged"; pass=$((pass+1)); else echo "FAIL balance logged"; fail=$((fail+1)); fi
 out=$($CLI session-end) >/dev/null
-out=$($CLI set default_profile 2) >/dev/null; : > "$T/am.log"
+out=$($CLI set default_profile 2) >/dev/null; : > "$T/am.log"; : > "$T/pm.log"
 out=$($CLI session-start com.test.game)
 if grep -q 'force-stop com.evil.app' "$T/am.log" && grep -q 'force-stop com.android.settings' "$T/am.log"; then echo "PASS performance all"; pass=$((pass+1)); else echo "FAIL performance all"; fail=$((fail+1)); fi
+if ! grep -q 'disable-user' "$T/pm.log"; then echo "PASS performance no-freeze"; pass=$((pass+1)); else echo "FAIL performance no-freeze"; fail=$((fail+1)); fi
 out=$($CLI session-end) >/dev/null
 out=$($CLI set default_profile 3) >/dev/null; : > "$T/am.log"
 out=$($CLI session-start com.test.game)
@@ -248,15 +255,34 @@ if [ "$n" -eq 2 ]; then echo "PASS awaken second sweep"; pass=$((pass+1)); else 
 out=$($CLI session-end) >/dev/null
 out=$($CLI set default_profile 2) >/dev/null
 out=$($CLI remove blacklist com.android.settings) >/dev/null
-# freeze/unfreeze: P2 freezes user targets, skips system; end restores; boot heals
+# auto by battery: 1-20 Balance, 21-50 Performance, 51-100 Awaken, unknown Balance
+out=$($CLI set default_profile 4) >/dev/null
+export FGC_BATT="$T/capacity"
+for _case in "10:1" "20:1" "21:2" "50:2" "51:3" "80:3"; do
+  _v="${_case%%:*}"; _want="${_case##*:}"
+  printf '%s' "$_v" > "$T/capacity"
+  out=$($CLI session-start com.test.game)
+  if grep -q "\"profile\":$_want" "$T/data/state/session.json"; then echo "PASS auto batt $_v -> $_want"; pass=$((pass+1)); else echo "FAIL auto batt $_v (want $_want)"; fail=$((fail+1)); fi
+  out=$($CLI session-end) >/dev/null
+done
+export FGC_BATT="$T/missing-capacity"
+out=$($CLI session-start com.test.game)
+if grep -q '"profile":1' "$T/data/state/session.json"; then echo "PASS auto unknown-batt"; pass=$((pass+1)); else echo "FAIL auto unknown-batt"; fail=$((fail+1)); fi
+out=$($CLI session-end) >/dev/null
+unset FGC_BATT
+out=$($CLI set default_profile 2) >/dev/null
+# freeze/unfreeze: P3 freezes user targets, skips system; end restores; boot heals
+out=$($CLI set default_profile 3) >/dev/null
 out=$($CLI add blacklist com.android.settings) >/dev/null
 printf 'u0_a1 123 456 com.evil.app\nu0_a1 124 457 com.android.settings\n' > "$T/ps.txt"
 : > "$T/pm.log"; : > "$T/data/state/frozen.txt"
+out=$($CLI set default_profile 3) >/dev/null
 out=$($CLI session-start com.test.game)
 if grep -q 'disable-user.*com.evil.app' "$T/pm.log" && ! grep -q 'disable-user.*com.android.settings' "$T/pm.log"; then echo "PASS freeze user-only"; pass=$((pass+1)); else echo "FAIL freeze user-only"; fail=$((fail+1)); fi
 if grep -qx 'com.evil.app' "$T/data/state/frozen.txt"; then echo "PASS frozen tracked"; pass=$((pass+1)); else echo "FAIL frozen tracked"; fail=$((fail+1)); fi
 out=$($CLI session-end)
 if grep -q 'enable.*com.evil.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS unfreeze on end"; pass=$((pass+1)); else echo "FAIL unfreeze on end"; fail=$((fail+1)); fi
+out=$($CLI set default_profile 2) >/dev/null
 # user-pre-disabled apps are never touched (no disable, no track, no enable)
 printf 'package:com.pre.disabled\n' > "$T/disabled.txt"
 out=$($CLI add blacklist com.pre.disabled) >/dev/null
@@ -274,6 +300,17 @@ printf 'com.stale.app\ncom.gone.app\n' > "$T/data/state/frozen.txt"
 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -q 'enable.*com.stale.app' "$T/pm.log" && ! grep -qx 'com.stale.app' "$T/data/state/frozen.txt" 2>/dev/null; then echo "PASS recovery unfreeze"; pass=$((pass+1)); else echo "FAIL recovery unfreeze"; fail=$((fail+1)); fi
 if ! grep -qx 'com.gone.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'package-gone'; then echo "PASS gone-app dropped"; pass=$((pass+1)); else echo "FAIL gone-app dropped"; fail=$((fail+1)); fi
+# freeze_system toggle (Awaken-only, system-type): ON freezes, OFF skips.
+# Blacklist <-> Awaken <-> toggle form one connected system.
+out=$($CLI set freeze_system true); ck "freeze_system on" '"ok":true' "$out"
+$CLI add blacklist com.android.settings >/dev/null 2>&1 || true
+printf 'u0_a1 124 457 com.android.settings\n' > "$T/ps.txt"
+: > "$T/pm.log"; : > "$T/data/state/frozen.txt"
+out=$($CLI set default_profile 3) >/dev/null
+out=$($CLI session-start com.test.game)
+if grep -q 'disable-user.*com.android.settings' "$T/pm.log"; then echo "PASS freeze-system on"; pass=$((pass+1)); else echo "FAIL freeze-system on"; fail=$((fail+1)); fi
+out=$($CLI session-end) >/dev/null
+out=$($CLI set default_profile 2) >/dev/null; out=$($CLI set freeze_system false) >/dev/null
 out=$($CLI remove blacklist com.android.settings) >/dev/null
 # fgc PATH wrappers (FGC_MODULES override keeps this hermetic)
 mkdir -p "$T/adb"; cp -r "$M" "$T/adb/faagamecore"
@@ -316,7 +353,7 @@ mv "$T/data/config/whitelist.txt" "$T/whitelist.hide"
 . "$M/core/process_manager.sh"
 export FGC_GAME=com.test.game
 printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
-: > "$T/am.log"
+: > "$T/am.log"; : > "$T/pm.log"
 fgc_cleanup com.evil.app >/dev/null
 if grep -q 'force-stop com.evil.app' "$T/am.log"; then echo "FAIL fail-closed cleanup"; fail=$((fail+1)); else echo "PASS fail-closed cleanup"; pass=$((pass+1)); fi
 fgc_freeze com.evil.app >/dev/null

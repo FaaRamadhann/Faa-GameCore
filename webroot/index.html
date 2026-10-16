@@ -23,12 +23,12 @@
 
   <main class="main">
     <div class="topbar">
-      <div><h1 id="pageTitle">Home</h1><p id="pageSub">Ringkasan status dan sesi game</p></div>
-      <div class="status-chips">
+      <div><h1 id="pageTitle">Home</h1><p id="pageSub">Ringkasan status dan sesi game</p></div>      <div class="status-chips">
         <span class="chip" id="chipCore"><span class="dot"></span><span id="chipCoreTx">…</span></span>
         <span class="chip info" id="chipProf">PROFILE: …</span>
         <span class="chip info mono" id="chipVer">v…</span>
         <button class="btn ghost" id="btnRefresh" style="min-height:40px;padding:8px 14px">Refresh</button>
+        <span class="mono" id="syncTime" style="font-size:11px;color:var(--text-muted)"></span>
       </div>
     </div>
 
@@ -60,7 +60,7 @@
     </section>
 
     <section class="page" id="page-black">
-      <div class="card"><h2>Blacklist</h2><div class="sub">Target cleanup — hanya dieksekusi saat sesi game, bukan saat toggle dinyalakan</div>
+      <div class="card"><h2>Blacklist</h2><div class="sub">Target force-stop + freeze saat sesi game (freeze aktif di Performance/Awaken; tipe-system hanya bila Freeze System App ON)</div>
         <div class="tabs" id="tabsBlack" role="tablist" aria-label="Filter tipe aplikasi"><button class="tab active" data-t="user">User App</button><button class="tab" data-t="system">System App</button></div>
         <input type="text" class="search" id="qBlack" placeholder="Search installed apps…" aria-label="Cari blacklist">
         <div class="applist" id="blackList"></div></div>
@@ -101,7 +101,7 @@
 <button class="fab-adv" id="fabAdv" aria-label="Menu lanjutan">⋯</button>
 <div class="toast" id="toast" aria-live="polite"></div>
 
-<script src="adapters/backend.js?v=120"></script>
-<script src="app.js?v=120"></script>
+<script src="adapters/backend.js?v=123"></script>
+<script src="app.js?v=123"></script>
 </body>
 </html>

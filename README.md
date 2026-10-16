@@ -63,10 +63,10 @@ Device bridge dideteksi berurutan (yang pertama tersedia dipakai):
 
 | Profil | Scope cleanup | Keterangan |
 |---|---|---|
-| 1 Balance | force-stop blacklist tipe-**user** saja | tanpa freeze; system/unknown diskip + tercatat |
-| 2 Performance | force-stop semua target aktif + **freeze** (`disable-user`) target user | unfreeze otomatis saat sesi berakhir |
-| 3 Awaken | sama dengan 2 | + satu sapuan ulang terbatas |
-| 4 Auto | aturan | game foreground → 2, idle → 1 (bukan AI) |
+| 1 Balance | Normal: sesi dipantau, tanpa force-stop/freeze | cocok saat baterai rendah (1–20%) |
+| 2 Performance | force-stop semua target aktif, **tanpa** freeze | cocok saat baterai 21–50% |
+| 3 Awaken | force-stop + **freeze** (`disable-user`), + sapuan ulang terbatas | unfreeze otomatis saat sesi berakhir; cocok saat baterai 51–100% |
+| 4 Auto | baterai 1–20 → 1, 21–50 → 2, 51–100 → 3 | baterai tak terbaca → Balance |
 
 Freeze selalu reversibel (`pm enable`), tidak pernah menyentuh tipe-system /
 whitelist/proteksi/game-foreground, dilewati saat dry-run, dan daftar

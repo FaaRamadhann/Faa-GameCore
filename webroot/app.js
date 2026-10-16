@@ -2,12 +2,12 @@
 (function () {
   "use strict";
   var backend = null;
-  var state = { page: "home", status: null, games: [], black: [], white: [], logs: [], config: {}, busy: {}, pkgs: [], pkgTypes: {}, tabGames: "user", tabWhite: "user", tabBlack: "user" };
+  var state = { page: "home", status: null, games: [], black: [], white: [], logs: [], config: {}, busy: {}, pkgs: [], pkgTypes: {}, pkgVers: {}, tabGames: "user", tabWhite: "user", tabBlack: "user" };
   var PROFILES = [
-    { id: 1, name: "Balance", desc: "Konservatif: hanya target tipe-user" },
-    { id: 2, name: "Performance", desc: "Standar: seluruh blacklist aktif" },
-    { id: 3, name: "Awaken", desc: "Agresif: + satu sapuan ulang terbatas" },
-    { id: 4, name: "Auto", desc: "Aturan: game→Perf, idle→Balance" }
+    { id: 1, name: "Balance", desc: "Normal: pantau sesi, tanpa force-stop/freeze" },
+    { id: 2, name: "Performance", desc: "Force-stop blacklist, tanpa freeze" },
+    { id: 3, name: "Awaken", desc: "Force-stop + freeze, unfreeze saat selesai" },
+    { id: 4, name: "Auto", desc: "Baterai 1-20 Balance, 21-50 Perf, 51+ Awaken" }
   ];
   var PAGES = [
     { id: "home", label: "Home", icon: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1v-8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>', sub: "Ringkasan status dan sesi game" },
@@ -183,13 +183,14 @@
   }
   function fetchIcon(img) {
     var pkg = img.dataset.pkg;
-    if (!pkg || img.dataset.done) return;
+    if (!pkg || img.dataset.done || img.dataset.queued) return;
     var tries = parseInt(img.dataset.tries || "0", 10);
     // Bounded retries: a failed fetch stays retryable across re-renders, but
     // never more than 3 attempts per image (then the letter avatar stands).
     if (tries >= 3) { img.dataset.done = "1"; return; }
     img.dataset.tries = String(tries + 1);
     if (iconCache[pkg]) { showIcon(img, iconCache[pkg]); return; }
+    img.dataset.queued = "1";
     iconQueue.push(img);
     pumpIcons();
   }
@@ -197,11 +198,13 @@
     if (iconBusy) return;
     var img = iconQueue.shift();
     if (!img) return;
+    delete img.dataset.queued;
     iconBusy = true;
     // Macrotask yield: on sync bridges each fetch blocks the thread for a
     // second or more — without this the UI freezes through the whole queue.
+    var ver = (state.pkgVers && state.pkgVers[img.dataset.pkg]) || "";
     setTimeout(function () {
-      backend.icon(img.dataset.pkg).then(function (url) {
+      backend.icon(img.dataset.pkg, ver).then(function (url) {
         iconBusy = false;
         if (url) { iconCache[img.dataset.pkg] = url; showIcon(img, url); }
         pumpIcons();
@@ -242,7 +245,7 @@
     if (backend && backend.mode === "device") {
       var img = document.createElement("img");
       img.alt = ""; img.loading = "lazy";
-      img.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:12px;display:none";
+      img.style.cssText = "width:100%;height:100%;object-fit:contain;border-radius:12px;display:none";
       img.dataset.pkg = pkg;
       ic.appendChild(img);
       queueIcon(img);
@@ -528,6 +531,7 @@
       row("Cleanup policy", "Seberapa agresif cleanup", sel("sPol", [["conservative", "Conservative"], ["balanced", "Balanced"], ["aggressive", "Aggressive"]], c.cleanup_policy)) +
       row("Logging", "Tulis session.log", sel("sLog", [["true", "ON"], ["false", "OFF"]], c.logging)) +
       row("Dry-run", "Uji policy tanpa force-stop", sel("sDry", [["false", "OFF"], ["true", "ON"]], c.dry_run)) +
+      row("Freeze System App", "Awaken ikut freeze tipe-system. RISIKO bootloop bila salah pilih; whitelist + proteksi tetap menang", sel("sFreezeSys", [["false", "OFF"], ["true", "ON"]], c.freeze_system)) +
       '<div class="row-actions"><button class="btn" id="btnSaveSet">Simpan Settings</button></div>' +
       '<p style="color:var(--text-muted);font-size:12px;margin-top:10px">Dry-run menguji policy tanpa menghentikan aplikasi. Perubahan hanya tampil sukses setelah backend konfirmasi.</p>';
     function row(t, d, ctrl) {
@@ -537,7 +541,8 @@
       var vals = {
         enabled: $("sEnabled").value, detection_mode: $("sMode").value,
         poll_interval_sec: $("sPoll").value, default_profile: $("sProf").value,
-        cleanup_policy: $("sPol").value, logging: $("sLog").value, dry_run: $("sDry").value
+        cleanup_policy: $("sPol").value, logging: $("sLog").value, dry_run: $("sDry").value,
+        freeze_system: $("sFreezeSys").value
       };
       setBusy("settings", true);
       var chain = Promise.resolve(true);
@@ -575,7 +580,13 @@
     return backend.packages().then(function (pkgs) {
       state.pkgs = pkgs || [];
       state.pkgTypes = {};
-      state.pkgs.forEach(function (a) { if (a && a.pkg) state.pkgTypes[a.pkg] = a.type || "unknown"; });
+      state.pkgVers = {};
+      state.pkgs.forEach(function (a) {
+        if (a && a.pkg) {
+          state.pkgTypes[a.pkg] = a.type || "unknown";
+          if (a.version) state.pkgVers[a.pkg] = a.version;
+        }
+      });
       if (state.page === "games") renderGames();
       if (state.page === "white" || state.page === "black") renderLists();
     }).catch(function () {
@@ -605,7 +616,17 @@
       else refreshLight();
     }, 1500);
   }
-  function noteOk() { retryCount = 0; }
+  function noteOk() {
+    retryCount = 0;
+    try {
+      var el = document.getElementById("syncTime");
+      if (el) {
+        var d = new Date();
+        var p = function (n) { return (n < 10 ? "0" : "") + n; };
+        el.textContent = "sinkron " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+      }
+    } catch (e) {}
+  }
   function fastJobs(failed) {
     function guard(p, name) {
       return p.catch(function () { failed.push(name); });
@@ -686,6 +707,14 @@
     bindDelegated($("gamesList"), onListChange);
     bindDelegated($("whiteList"), onListChange);
     bindDelegated($("blackList"), onListChange);
+    // External edits (terminal, other sessions) bypass the UI: re-sync when
+    // the page becomes visible again instead of showing stale switches.
+    var visT = null;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) return;
+      if (visT) return;
+      visT = setTimeout(function () { visT = null; refreshLight(); }, 1200);
+    });
     // Debounced, targeted rendering: typing must not rebuild every page.
     function debounce(fn, ms) {
       var t = null;

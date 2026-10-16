@@ -345,16 +345,26 @@ cmd_session() {
 }
 
 cmd_icon() {
-  # icon <pkg> -> base64 PNG (144px) on stdout. Disk-cached under state/icons.
+  # icon <pkg> [ver] -> base64 PNG (144px) on stdout. Disk-cached under state/icons.
+  # Optional ver (app versionName): when it differs from the cached .ver, the
+  # icon is regenerated (covers app updates without extra version lookups here).
   valid_pkg "$1" || { echo '{"error":"invalid package"}'; return 1; }
   _cdir="$FGC_STATE/icons"
   mkdir -p "$_cdir" 2>/dev/null
-  _cf="$_cdir/$1.b64"
-  if [ -s "$_cf" ]; then cat "$_cf"; return 0; fi
+  _cf="$_cdir/$1.b64"; _vf="$_cdir/$1.ver"
+  if [ -s "$_cf" ]; then
+    if [ -z "$2" ]; then cat "$_cf"; return 0; fi
+    if [ -f "$_vf" ]; then
+      _ov="$(cat "$_vf" 2>/dev/null)"
+      if [ "$_ov" = "$2" ]; then cat "$_cf"; return 0; fi
+    fi
+    # version unknown (legacy cache) or changed -> regenerate below
+  fi
   _out="$(fgc_java icon "$1" 2>/dev/null)" || { echo '{"error":"icon-unavailable"}'; return 1; }
   case "$_out" in '') echo '{"error":"icon-unavailable"}'; return 1 ;; esac
   case "$_out" in *[!a-zA-Z0-9+/=]*) echo '{"error":"icon-unavailable"}'; return 1 ;; esac
   printf '%s' "$_out" > "$_cf" 2>/dev/null
+  if [ -n "$2" ]; then printf '%s' "$2" > "$_vf" 2>/dev/null; else rm -f "$_vf" 2>/dev/null; fi
   printf '%s' "$_out"
 }
 
@@ -424,7 +434,7 @@ case "$1" in
   toggle) shift; cmd_toggle "$@" ;;
   set) shift; cmd_set "$@" ;;
   session-start|session-end) cmd_session "$1" "$2" ;;
-  icon) cmd_icon "$2" ;;
+  icon) shift; cmd_icon "$@" ;;
   icons) shift; cmd_icons "$@" ;;
   diag) cmd_diag ;;
   *) echo "usage: fgc-cli.sh status|list|add|remove|toggle|set|session-start|session-end|icon|diag" >&2; exit 1 ;;

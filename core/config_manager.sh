@@ -8,7 +8,7 @@ fgc_cfg_get() {
   # $1 = key ; prints raw value
   _k="$1"; _f="$FGC_CONFIG/config.json"
   case "$_k" in
-    enabled|detection_mode|poll_interval_sec|default_profile|cleanup_policy|logging|dry_run) ;;
+    enabled|detection_mode|poll_interval_sec|default_profile|cleanup_policy|logging|dry_run|freeze_system) ;;
     *) return 1 ;;
   esac
   grep -o "\"$_k\"[ ]*:[ ]*[^,}]*" "$_f" 2>/dev/null | head -n1 | cut -d: -f2- | tr -d ' "'
@@ -18,7 +18,7 @@ fgc_cfg_set() {
   # $1 = key, $2 = value (validated). Returns 0 on success.
   _k="$1"; _v="$2"; _f="$FGC_CONFIG/config.json"; _t="$_f.tmp"
   case "$_k" in
-    enabled|logging|dry_run)
+    enabled|logging|dry_run|freeze_system)
       case "$_v" in true|false) ;; *) echo "invalid boolean" >&2; return 1 ;; esac ;;
     detection_mode)
       case "$_v" in foreground|gamelist|hybrid) ;; *) echo "invalid mode" >&2; return 1 ;; esac ;;

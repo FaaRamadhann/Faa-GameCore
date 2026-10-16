@@ -6,8 +6,23 @@ FGC_MODDIR="${FGC_MODDIR:-${0%/*}/..}"
 
 fgc_prop() { getprop "$1" 2>/dev/null | head -n1; }
 
-fgc_root_manager() {
-  # Detect Magisk / KernelSU / APatch by presence + version query. Best effort.
+fgc_battery_pct() {
+  # Prints 0-100 or nothing. sysfs first (fast, universal), dumpsys fallback.
+  # FGC_BATT overrides the sysfs path (used by automated tests).
+  _bf="${FGC_BATT:-/sys/class/power_supply/battery/capacity}"
+  _c="$(cat "$_bf" 2>/dev/null)"
+  case "$_c" in
+    ''|*[!0-9]*) ;;
+    *) [ "$_c" -ge 0 ] 2>/dev/null && [ "$_c" -le 100 ] 2>/dev/null && { printf '%s' "$_c"; return 0; } ;;
+  esac
+  _l="$(dumpsys battery 2>/dev/null | grep -m1 'level:' | grep -o '[0-9][0-9]*' | head -n1)"
+  case "$_l" in
+    ''|*[!0-9]*) return 1 ;;
+    *) [ "$_l" -le 100 ] 2>/dev/null && { printf '%s' "$_l"; return 0; } || return 1 ;;
+  esac
+}
+
+fgc_root_manager() {  # Detect Magisk / KernelSU / APatch by presence + version query. Best effort.
   if command -v magisk >/dev/null 2>&1; then
     _v="$(magisk -v 2>/dev/null | head -n1)"
     [ -n "$_v" ] && { printf 'Magisk %s' "$_v"; return 0; }
