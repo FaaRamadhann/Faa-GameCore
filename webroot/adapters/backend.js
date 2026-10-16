@@ -117,7 +117,15 @@
     var parts = String(args).split(" ");
     if (!ALLOW[parts[0]]) return Promise.reject(new Error("blocked command"));
     var cmd = "sh \"" + this.moddir + "/core/fgc-cli.sh\" " + args;
-    return this.bridge.exec(cmd);
+    return this.bridge.exec(cmd).then(null, function (e) {
+      // Client-side exec telemetry: the only record of bridge-level failures.
+      try {
+        window.__fgcErr = window.__fgcErr || [];
+        window.__fgcErr.push({ t: new Date().toISOString().slice(11, 19), op: parts[0], err: String((e && e.message) || e).slice(0, 120) });
+        if (window.__fgcErr.length > 8) window.__fgcErr.shift();
+      } catch (_) { /* never break on telemetry */ }
+      throw e;
+    });
   };
   function parseErr(r) {
     if (r && typeof r === "object" && r.error) throw new Error(r.error);
@@ -196,7 +204,16 @@
           return out;
         };
         // CLI merge fills anything still unresolved (old hosts, info errors).
+        // Skipped when ksu already covered nearly everything: the java exec
+        // costs seconds of blocked UI thread, so don't pay it needlessly.
         // CLI failure alone must not blank the list.
+        var missing = 0, j;
+        for (j = 0; j < all.length; j++) {
+          if (!labels[all[j]]) missing++;
+        }
+        if (missing * 5 < all.length) {
+          return Promise.resolve(build());
+        }
         return viaCli().then(function (cli) {
           cli.forEach(function (a) {
             if (a && a.pkg && !labels[a.pkg] && a.label && a.label !== a.pkg) labels[a.pkg] = a.label;
@@ -282,7 +299,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.8",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.9",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

@@ -574,16 +574,22 @@
       if (state.page === "games") renderGames();
       if (state.page === "white" || state.page === "black") renderLists();
     }).catch(function () {
-      state.pkgs = []; state.pkgTypes = {};
+      // Keep previous universe: stale beats fake-empty (wrong switches).
       scheduleRetry("packages");
     });
   }
   var retryTimer = null, retryCount = 0;
-  function scheduleRetry(what) {
+  function scheduleRetry(what, names) {
     // One automatic retry for transient backend failures (flaky exec/host).
     // Persistent failure surfaces one honest toast instead of fake-empty UI.
+    var detail = (names && names.length) ? " [" + names.join(", ") + "]" : "";
     if (retryCount >= 1) {
-      toast("Backend tidak stabil (" + what + ") — tekan Refresh.", "err");
+      var lastErr = "";
+      try {
+        var log = window.__fgcErr || [];
+        if (log.length) lastErr = " — " + log[log.length - 1].op + ": " + log[log.length - 1].err;
+      } catch (_) {}
+      toast("Backend tidak stabil (" + what + detail + ")" + lastErr + " — tekan Refresh.", "err");
       return;
     }
     retryCount++;
@@ -612,7 +618,7 @@
     var failed = [];
     return Promise.all(fastJobs(failed)).then(function () {
       render();
-      if (failed.length) scheduleRetry("refresh"); else noteOk();
+      if (failed.length) scheduleRetry("refresh", failed); else noteOk();
       if (full) return loadPackages().then(loadIconBatch);
     });
   }
@@ -622,12 +628,17 @@
     var failed = [];
     return Promise.all(fastJobs(failed)).then(function () {
       render();
-      if (failed.length) scheduleRetry("refresh"); else noteOk();
+      if (failed.length) scheduleRetry("refresh", failed); else noteOk();
     });
   }
   function runDiag() {
     $("diagBox").innerHTML = '<div class="skel" style="height:120px"></div>';
     $("diagDevBox").innerHTML = "";
+    var errs = [];
+    try { errs = window.__fgcErr || []; } catch (e) { errs = []; }
+    $("execErrBox").innerHTML = errs.length
+      ? '<div class="kv"><span>Bridge exec errors</span><b class="mono">' + esc(errs.map(function (x) { return x.t + " " + x.op + ": " + x.err; }).join(" | ")) + "</b></div>"
+      : '<div class="kv"><span>Bridge exec errors</span><b>none recorded</b></div>';
     backend.diag().then(function (d) {
       var dev = d.device || {};
       var caps = d.caps || {};
