@@ -185,12 +185,13 @@ json.dump(d,open(f,"w"),indent=1)
 EOF
         # fallback without python: exact-object surgery (line-based delete
         # would nuke the whole file when JSON is single-line). Normalized
-        # first; removes the object with optional trailing comma, then
-        # collapses a leftover ", ]".
+        # first; two expressions instead of one \{0,1\} interval (toybox sed
+        # lacks intervals): first strips a mid-list object incl. its comma,
+        # second strips a last/only object; then collapse a leftover ", ]".
         _gf="$FGC_CONFIG/gamelist.json"
         _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
         _re="$(printf '%s' "$_p" | sed 's/\./\\./g')"
-        printf '%s' "$_one" | sed "s/{\"package\": \"$_re\"[^}]*\}\(, *\)\{0,1\}//; s/, *\]/]/" > "$_gf.tmp" 2>/dev/null \
+        printf '%s' "$_one" | sed -e "s/{\"package\": \"$_re\"[^}]*\}, *//" -e "s/{\"package\": \"$_re\"[^}]*\}//" -e "s/, *\]/]/" > "$_gf.tmp" 2>/dev/null \
           && grep -q '"games"' "$_gf.tmp" 2>/dev/null \
           && mv "$_gf.tmp" "$_gf" || { rm -f "$_gf.tmp"; echo '{"error":"remove-failed"}'; return 1; }
       }
@@ -205,7 +206,7 @@ EOF
 
 cmd_toggle() { # toggle <blacklist|whitelist> <package> on|off  (off = prefix !)
   _t="$1"; _p="$2"; _s="$3"
-  valid_pkg "$_p" || return 1
+  valid_pkg "$_p" || { echo '{"error":"invalid package"}'; return 1; }
   _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
   grep -v "^$_p$" "$_f" 2>/dev/null | grep -v "^!$_p$" > "$_f.tmp"; mv "$_f.tmp" "$_f"
   if [ "$_s" = "on" ]; then printf '%s\n' "$_p" >> "$_f"; else printf '!%s\n' "$_p" >> "$_f"; fi
@@ -215,10 +216,14 @@ cmd_toggle() { # toggle <blacklist|whitelist> <package> on|off  (off = prefix !)
 cmd_set() { # set <key> <value> | set profile <1..4> [package]
   if [ "$1" = "profile" ]; then
     _pv="$2"; _pkg="$3"
-    case "$_pv" in 1|2|3|4) ;; *) echo '{"error":"invalid profile"}'; return 1 ;; esac
+    # 0 = follow default-profile (valid for per-game entries only)
+    case "$_pv" in 0|1|2|3|4) ;; *) echo '{"error":"invalid profile"}'; return 1 ;; esac
+    if [ -n "$_pkg" ] && [ "$_pv" = "0" ]; then :; elif [ -z "$_pkg" ] && [ "$_pv" = "0" ]; then echo '{"error":"invalid profile"}'; return 1; fi
     if [ -n "$_pkg" ]; then
-      valid_pkg "$_pkg" || return 1
-      python3 - "$FGC_CONFIG/gamelist.json" "$_pkg" "$_pv" 2>/dev/null <<'EOF' || return 1
+      valid_pkg "$_pkg" || { echo '{"error":"invalid package"}'; return 1; }
+      grep -q "\"package\"[ ]*:[ ]*\"$_pkg\"" "$FGC_CONFIG/gamelist.json" 2>/dev/null \
+        || { echo '{"error":"not-a-game"}'; return 1; }
+      if python3 - "$FGC_CONFIG/gamelist.json" "$_pkg" "$_pv" 2>/dev/null <<'EOF'
 import json,sys
 f,pkg,pv=sys.argv[1],sys.argv[2],int(sys.argv[3])
 d=json.load(open(f))
@@ -226,7 +231,19 @@ for g in d.get("games",[]):
   if g.get("package")==pkg: g["profile"]=pv
 json.dump(d,open(f,"w"),indent=1)
 EOF
-      echo '{"ok":true}'
+      then
+        echo '{"ok":true}'
+      else
+        # fallback without python: rewrite ONLY the profile digits inside the
+        # target object (label untouched). Normalized single-line first.
+        _gf="$FGC_CONFIG/gamelist.json"
+        _re="$(printf '%s' "$_pkg" | sed 's/\./\\./g')"
+        _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
+        printf '%s' "$_one" | sed "s/\({\"package\": \"$_re\"[^}]*\"profile\": \)[0-9][0-9]*/\1$_pv/" > "$_gf.tmp" 2>/dev/null \
+          && grep -q "\"package\": \"$_re\"[^}]*\"profile\": $_pv" "$_gf.tmp" 2>/dev/null \
+          && mv "$_gf.tmp" "$_gf" && echo '{"ok":true}' \
+          || { rm -f "$_gf.tmp"; echo '{"error":"set-failed"}'; return 1; }
+      fi
     else
       fgc_cfg_set default_profile "$_pv" && echo '{"ok":true}' || echo '{"error":"set-failed"}'
     fi
@@ -266,6 +283,29 @@ cmd_icon() {
   printf '%s' "$_out"
 }
 
+cmd_icons() {
+  # icons [pkg...] -> cached icons only, one per line: pkg<TAB>base64.
+  # No args = dump whole cache. Uncached packages are SKIPPED here (fetch
+  # them individually via `icon`, which generates + caches). Single exec
+  # serves the common case instead of one blocking round-trip per row.
+  _cdir="$FGC_STATE/icons"
+  [ -d "$_cdir" ] || return 0
+  if [ $# -eq 0 ]; then
+    for _cf in "$_cdir"/*.b64; do
+      [ -f "$_cf" ] || continue
+      _bn="${_cf##*/}"; _bp="${_bn%.b64}"
+      valid_pkg "$_bp" || continue
+      printf '%s\t%s\n' "$_bp" "$(cat "$_cf" 2>/dev/null)"
+    done
+  else
+    for _p in "$@"; do
+      valid_pkg "$_p" || continue
+      [ -s "$_cdir/$_p.b64" ] || continue
+      printf '%s\t%s\n' "$_p" "$(cat "$_cdir/$_p.b64" 2>/dev/null)"
+    done
+  fi
+}
+
 cmd_diag() {
   _cmds="pm dumpsys am cmd getprop grep sed"; _ok=""
   for _c in $_cmds; do command -v "$_c" >/dev/null 2>&1 && _ok="$_ok $_c:yes" || _ok="$_ok $_c:no"; done
@@ -275,15 +315,30 @@ cmd_diag() {
   _files=""; for _f in config/config.json config/gamelist.json config/blacklist.txt config/whitelist.txt core/main.sh core/caps.sh core/device.sh core/str.sh core/policy_engine.sh; do
     if ls "$MODDIR/${_f%/*}" 2>/dev/null | grep -qx "${_f##*/}"; then _files="$_files $_f:ok"; else _files="$_files $_f:missing"; fi
   done
-  _caps="$(cat "$FGC_STATE/caps.json" 2>/dev/null)"
-  [ -n "$_caps" ] || _caps="$(fgc_detect_caps 2>/dev/null)"
+  _caps=""
+  if [ -s "$FGC_STATE/caps.json" ]; then
+    _caps="$(cat "$FGC_STATE/caps.json" 2>/dev/null)"
+  fi
+  # Opportunistic refresh: absent snapshot, or a boot-time snapshot that
+  # predates ready services (empty launcher, unverified foreground). Probe
+  # instead of reporting stale degradation forever.
+  _stale=1
+  case "$_caps" in
+    *'"foreground":"activity"'*|*'"foreground":"window"'*) _stale=0 ;;
+  esac
+  case "$_caps" in *'"launcher":""'*) _stale=1 ;; esac
+  if [ "$_stale" = 1 ]; then
+    _fresh="$(fgc_detect_caps 2>/dev/null)"
+    [ -n "$_fresh" ] && _caps="$_fresh"
+  fi
   [ -n "$_caps" ] || _caps='{"foreground":"unknown"}'
   _jv="$(fgc_java ping 2>/dev/null)"
   _jh=no; [ "$_jv" = "pong" ] && _jh=yes
   _caps="$(printf '%s' "$_caps" | sed 's/}$//')"
   _caps="$_caps,\"javahlp\":\"$_jh\"}"
   _dev="$(fgc_device_json 2>/dev/null)"; [ -n "$_dev" ] || _dev='{"manufacturer":"Unknown","model":"Unknown","android":"Unknown","sdk":"Unknown","root":"Not detected"}'
-  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_caps" "$_dev"
+  _nic=0; _nic="$(ls "$FGC_STATE/icons" 2>/dev/null | grep -c '\.b64$' 2>/dev/null)"; [ -n "$_nic" ] || _nic=0
+  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","icons_cached":%s,"caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_nic" "$_caps" "$_dev"
 }
 
 case "$1" in
@@ -295,6 +350,7 @@ case "$1" in
   set) shift; cmd_set "$@" ;;
   session-start|session-end) cmd_session "$1" "$2" ;;
   icon) cmd_icon "$2" ;;
+  icons) shift; cmd_icons "$@" ;;
   diag) cmd_diag ;;
   *) echo "usage: fgc-cli.sh status|list|add|remove|toggle|set|session-start|session-end|icon|diag" >&2; exit 1 ;;
 esac

@@ -25,7 +25,11 @@ fgc_detect_launcher() {
   if [ -z "$_r" ] && fgc_has_cmd dumpsys; then
     _dout="$FGC_STATE/.dout"
     if fgc_run_timed 15 dumpsys activity activities > "$_dout" 2>/dev/null; then
-      _r="$(grep -m1 'mFocusedApp' "$_dout" 2>/dev/null | grep -o '[a-zA-Z][a-zA-Z0-9_]*\(\.[a-zA-Z0-9_][a-zA-Z0-9_]*\)\+' | tail -n1)"
+      _rline="$(grep -m1 'mFocusedApp' "$_dout" 2>/dev/null)"
+      if [ -n "$_rline" ]; then
+        . "${FGC_MODDIR}/core/foreground_monitor.sh"
+        _r="$(_fgc_pkg_of "$_rline")"
+      fi
     fi
     rm -f "$_dout"
     case "$_r" in *launcher*|*home*) ;; *) _r="" ;; esac
@@ -42,9 +46,10 @@ fgc_detect_caps() {
   _getprop=no; fgc_has_cmd getprop && _getprop=yes
   _fg=none
   if [ "$_dumpsys" = yes ]; then
-    # grep -c consumes all input (no early exit) -> always terminates
-    if [ "$(fgc_run_timed 20 dumpsys activity activities 2>/dev/null | grep -c 'mFocusedApp\|ResumedActivity')" -gt 0 ] 2>/dev/null; then _fg=activity
-    elif [ "$(fgc_run_timed 20 dumpsys window windows 2>/dev/null | grep -c 'mCurrentFocus\|mFocusedApp')" -gt 0 ] 2>/dev/null; then _fg=window
+    # grep -c consumes all input (no early exit) -> always terminates.
+    # Patterns are POSIX-only (-e list, no \|): toybox grep lacks GNU BRE.
+    if [ "$(fgc_run_timed 20 dumpsys activity activities 2>/dev/null | grep -c -e 'topResumedActivity=' -e 'mFocusedApp' -e 'ResumedActivity')" -gt 0 ] 2>/dev/null; then _fg=activity
+    elif [ "$(fgc_run_timed 20 dumpsys window windows 2>/dev/null | grep -c -e 'mCurrentFocus' -e 'mFocusedApp')" -gt 0 ] 2>/dev/null; then _fg=window
     else _fg=dumpsys-present-unverified; fi
   fi
   _pkg=none; [ "$_pm" = yes ] && _pkg=pm

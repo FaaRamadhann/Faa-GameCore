@@ -30,6 +30,7 @@ cat > "$T/bin/magisk" <<'EOF'
 EOF
 cat > "$T/bin/cmd" <<'EOF'
 #!/usr/bin/env bash
+echo "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true"
 echo "com.test.launcher/com.test.launcher.Home"
 EOF
 cat > "$T/bin/pm" <<'EOF'
@@ -52,12 +53,21 @@ echo "package:com.android.systemui"
 EOF
 cat > "$T/bin/dumpsys" <<'EOF'
 #!/usr/bin/env bash
+if [ "${STUB_DUMPSYS:-new}" = "weird" ] && [ "$1" != "package" ]; then echo "??? unknown rom format ???"; exit 0; fi
 if [ "$1" = "package" ]; then
   case "$2" in com.evil.app) echo "    application-label:'Evil App'";; *) echo "  application-label:StubApp";; esac
   exit 0
 fi
-if [ "$1" = "activity" ]; then echo "  mFocusedApp=ActivityRecord{com.test.game/.Main}"; exit 0; fi
-if [ "$1" = "window" ]; then echo "  mCurrentFocus=Window{com.test.game}"; exit 0; fi
+if [ "$1" = "activity" ] && [ "$2" = "top" ]; then echo "  ACTIVITY com.test.game/.Main 12345 pid=999"; exit 0; fi
+if [ "$1" = "activity" ]; then
+  # MIUI/HyperOS style (default); STUB_DUMPSYS=old selects legacy AOSP style
+  if [ "${STUB_DUMPSYS:-new}" = "old" ]; then echo "  mFocusedApp=ActivityRecord{com.test.game/.Main}";
+  else echo "    topResumedActivity=ActivityRecord{1274f72 u0 com.test.game/com.test.game.Main} t123}"; fi
+  exit 0
+fi
+if [ "$1" = "window" ]; then
+  echo "  mCurrentFocus=Window{com.test.game}"; exit 0
+fi
 EOF
 cat > "$T/bin/am" <<'EOF'
 #!/usr/bin/env bash
@@ -104,6 +114,10 @@ printf '{\n "games": [\n  {"package": "com.keep.me", "label": "Keep Me", "profil
 out=$($CLI remove games com.drop.me); ck "remove pretty-listed" '"ok":true' "$out"
 if grep -q '"package": "com.keep.me"' "$T/data/config/gamelist.json" && ! grep -q 'com.drop.me' "$T/data/config/gamelist.json"; then echo "PASS pretty remove preserves"; pass=$((pass+1)); else echo "FAIL pretty remove"; fail=$((fail+1)); fi
 out=$($CLI add games com.test.game TestGame 0); ck "restore test game" '"ok":true' "$out"
+out=$($CLI set profile 3 com.test.game); ck "set per-game profile" '"ok":true' "$out"
+grep -q '"package": "com.test.game"[^}]*"profile": 3' "$T/data/config/gamelist.json" && { echo "PASS per-game stored"; pass=$((pass+1)); } || { echo "FAIL per-game stored"; fail=$((fail+1)); }
+out=$($CLI set profile 0 com.test.game); ck "reset per-game default" '"ok":true' "$out"
+out=$($CLI set profile 9 com.test.game); ck "reject bad per-game" 'invalid profile' "$out"
 out=$($CLI list games);        ck "list games has pkg" 'com.test.game' "$out"
 out=$($CLI list);               ck "bare list defaults games" 'com.test.game' "$out"
 mkdir -p "$T/empty/config" "$T/empty/state" "$T/empty/logs"
@@ -162,7 +176,10 @@ if [ "$n" -eq 1 ]; then echo "PASS single cleanup per session"; pass=$((pass+1))
 fgc_session_end
 [ -f "$M/state/session.lock" ] && { echo "FAIL lock cleared"; fail=$((fail+1)); } || { echo "PASS lock cleared"; pass=$((pass+1)); }
 # detector + packages + diag + logs
-out=$(bash "$M/core/event_detector.sh"); ck "detector finds game" 'GAME|com.test.game' "$out"
+out=$(bash "$M/core/event_detector.sh"); ck "detector finds game (miui fmt)" 'GAME|com.test.game' "$out"
+out=$(STUB_DUMPSYS=old bash "$M/core/event_detector.sh"); ck "detector finds game (old fmt)" 'GAME|com.test.game' "$out"
+out=$(STUB_DUMPSYS=weird bash "$M/core/event_detector.sh"); ck "unknown rom degrades IDLE" 'IDLE' "$out"
+out=$($CLI icon com.no.helper.here 2>/dev/null); ck "icon unavailable w/o helper" 'icon-unavailable' "$out"
 out=$($CLI list packages); ck "pm stub packages" 'com.whatsapp' "$out"
 printf '%s\n' "$out" | grep -x 'android	StubApp	system' >/dev/null && { echo "PASS pkg type system"; pass=$((pass+1)); } || { echo "FAIL pkg type system -- got: $out"; fail=$((fail+1)); }
 printf '%s\n' "$out" | grep -x 'com.test.game	StubApp	user' >/dev/null && { echo "PASS pkg type user"; pass=$((pass+1)); } || { echo "FAIL pkg type user -- got: $out"; fail=$((fail+1)); }
@@ -179,6 +196,8 @@ out=$($CLI list packages user)
 if printf '%s\n' "$out" | grep -x 'com.stub.game	Stub Game	user' >/dev/null && ! printf '%s\n' "$out" | grep -q 'com.stub.sys'; then echo "PASS java user filter"; pass=$((pass+1)); else echo "FAIL java user filter -- got: $out"; fail=$((fail+1)); fi
 out=$($CLI icon com.test.game)
 [ "$out" = "aVBORw0KGgo=" ] && [ -f "$T/data/state/icons/com.test.game.b64" ] && { echo "PASS icon cache"; pass=$((pass+1)); } || { echo "FAIL icon -- got: $out"; fail=$((fail+1)); }
+out=$($CLI icons com.test.game com.missing.pkg)
+printf '%s\n' "$out" | grep -qx 'com.test.game	aVBORw0KGgo=' && ! printf '%s\n' "$out" | grep -q 'com.missing' && { echo "PASS icons batch"; pass=$((pass+1)); } || { echo "FAIL icons batch -- got: $out"; fail=$((fail+1)); }
 out=$($CLI diag)
 [[ "$out" == *'"javahlp":"yes"'* ]] && { echo "PASS caps javahlp"; pass=$((pass+1)); } || { echo "FAIL caps javahlp"; fail=$((fail+1)); }
 out=$($CLI diag); ck "diag runs" 'session_lock' "$out"

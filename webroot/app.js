@@ -204,6 +204,24 @@
       }).catch(function () { iconBusy = false; pumpIcons(); });
     }, 30);
   }
+  function paintCachedIcons() {
+    // Show everything already in memory cache without new execs.
+    var imgs = document.querySelectorAll(".appicon img[data-pkg]:not([data-done])");
+    for (var i = 0; i < imgs.length; i++) {
+      var u = iconCache[imgs[i].dataset.pkg];
+      if (u) { imgs[i].dataset.done = "1"; showIcon(imgs[i], u); }
+    }
+  }
+  function loadIconBatch() {
+    // One exec for the whole disk cache; individual fetch covers the rest.
+    return backend.icons().then(function (map) {
+      var changed = false, k;
+      for (k in map) {
+        if (map.hasOwnProperty(k) && map[k] && !iconCache[k]) { iconCache[k] = map[k]; changed = true; }
+      }
+      if (changed) paintCachedIcons();
+    }).catch(function () {});
+  }
   function showIcon(img, url) {
     img.src = url;
     img.style.display = "block";
@@ -518,7 +536,7 @@
     return Promise.all(fastJobs(failed)).then(function () {
       render();
       if (failed.length) scheduleRetry("refresh"); else noteOk();
-      if (full) return loadPackages();
+      if (full) return loadPackages().then(loadIconBatch);
     });
   }
   function refreshLight() {
@@ -560,6 +578,7 @@
         '<div class="kv"><span>Session lock</span><b class="mono">' + esc(d.session_lock) + "</b></div>" +
         '<div class="kv"><span>Files</span><b class="mono">' + esc(d.files) + "</b></div>" +
         '<div class="kv"><span>Boot completed</span><b class="mono">' + esc(d.boot_completed) + "</b></div>" +
+        '<div class="kv"><span>Cached icons</span><b class="mono">' + esc(d.icons_cached == null ? "?" : d.icons_cached) + "</b></div>" +
         '<div class="kv"><span>Backend</span><b class="mono">' + esc(backend.mode) + "</b></div>";
     }).catch(function () { $("diagBox").innerHTML = '<div class="empty">Diagnostic gagal — backend tidak merespons.</div>'; });
   }

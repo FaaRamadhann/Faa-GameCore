@@ -25,9 +25,16 @@ fgc_migrate_keys() {
   # caller can rescue instead of silently keeping garbage.
   _mf="$1"
   [ -f "$_mf" ] || return 1
-  _alt='"enabled"\|"detection_mode"\|"poll_interval_sec"\|"default_profile"\|"cleanup_policy"\|"logging"\|"dry_run"\|"auto_profile_rules"'
+  _alt() {
+    # One key per line (POSIX grep -o with -e list; NO \| alternation:
+    # toybox grep lacks it and fails SILENTLY, which once caused endless
+    # duplicate-key appends + false corrupt-rescues on-device).
+    grep -o -e '"enabled"' -e '"detection_mode"' -e '"poll_interval_sec"' \
+      -e '"default_profile"' -e '"cleanup_policy"' -e '"logging"' \
+      -e '"dry_run"' -e '"auto_profile_rules"' "$_mf" 2>/dev/null | sort -u
+  }
   _all_present() {
-    _have="$(grep -o "$_alt" "$_mf" 2>/dev/null | sort -u)"
+    _have="$(_alt)"
     for _k in enabled detection_mode poll_interval_sec default_profile cleanup_policy logging dry_run auto_profile_rules; do
       case "$_have" in *"\"$_k\""*) ;; *) return 1 ;; esac
     done

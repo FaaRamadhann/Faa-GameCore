@@ -90,11 +90,28 @@ check("btnRestart" in idx and "restartService" in be, "core restart via bridge")
 check("btnIconProbe" in idx and "scheduleSweep" in app, "icon probe + IO fallback")
 check("refreshLight" in app and "loadPackages" in app and "scheduleRetry" in app and "debounce" in app, "perf: light refresh + lazy packages + retry + debounce")
 check("reconcile" in app and "terkonfirmasi" in app, "reconcile-on-error for switches")
+check("loadIconBatch" in app and "paintCachedIcons" in app and "icons" in be, "batched icon cache")
 check((ROOT/"core/paths.sh").exists(), "canonical paths module")
 _cl = (ROOT/"core/fgc-cli.sh").read_text(encoding="utf-8")
 check("FGC_CONFIG" in _cl and "FGC_STATE" in _cl, "canonical data paths in CLI")
 check("fgc_run_timed" in (ROOT/"core/str.sh").read_text(encoding="utf-8"), "hang-guard helper")
 check("fgc_daemon_alive" in (ROOT/"core/main.sh").read_text(encoding="utf-8"), "pid-verified stale lock")
+check("topResumedActivity" in (ROOT/"core/foreground_monitor.sh").read_text(encoding="utf-8"), "miui foreground markers")
+import re
+_gnu_bad = []
+for _f in list((ROOT/"core").glob("*.sh")) + list((ROOT/"system/bin").glob("*")) + \
+         [ROOT/"customize.sh", ROOT/"service.sh", ROOT/"action.sh", ROOT/"uninstall.sh"] + \
+         list((ROOT/"tests").glob("*.sh")):
+    if not _f.is_file():
+        continue
+    for _i, _ln in enumerate(_f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+        _s = _ln.strip()
+        if not _s or _s.startswith("#"):
+            continue
+        if "grep" in _s or "sed" in _s:
+            if "\\\\|" in _s or "\\\\+" in _s or re.search(r"\\\\\{[0-9]", _s):
+                _gnu_bad.append("%s:%d" % (_f.name, _i))
+check(not _gnu_bad, "posix grep/sed only" + ("" if not _gnu_bad else ": " + ",".join(_gnu_bad)))
 check("protected_extra" in pe, "dynamic launcher protection")
 check("FGC_PROTECTED_BASE" in pe and "miui" not in pe.lower(), "universal protected base")
 print("universal: %d failed" % len([m for m in fails if 'brand' in m or 'chip' in m or 'fallback' in m or 'caps' in m or 'protect' in m]))

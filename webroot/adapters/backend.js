@@ -104,7 +104,7 @@
     try { if (ksu && typeof ksu.toast === "function") ksu.toast(msg); } catch (e) {}
   }
 
-  var ALLOW = { status: 1, list: 1, add: 1, remove: 1, toggle: 1, set: 1, diag: 1, "session-start": 1, "session-end": 1, icon: 1 };
+  var ALLOW = { status: 1, list: 1, add: 1, remove: 1, toggle: 1, set: 1, diag: 1, "session-start": 1, "session-end": 1, icon: 1, icons: 1 };
 
   function DeviceBackend(bridge, moddir, bridgeInfo) {
     this.mode = "device";
@@ -245,6 +245,19 @@
       return "data:image/png;base64," + t;
     });
   };
+  DeviceBackend.prototype.icons = function () {
+    // Batch: all cached icons in ONE exec (pkg -> data URL map).
+    return this._run("icons").then(function (t) {
+      var map = {};
+      String(t || "").split("\n").forEach(function (l) {
+        l = l.trim();
+        if (!l) return;
+        var i = l.indexOf("\t");
+        if (i > 0) map[l.slice(0, i)] = "data:image/png;base64," + l.slice(i + 1);
+      });
+      return map;
+    }).catch(function () { return {}; });
+  };
 
   /* ---- Local preview backend: real JS persistence, no fake installed apps ---- */
   var LS = "fgc.preview.v1";
@@ -266,7 +279,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.3",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.1.6",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };
@@ -321,6 +334,7 @@
   LocalBackend.prototype.sessionEnd = function () { return Promise.resolve({ ok: true }); };
   LocalBackend.prototype.restartService = function () { return Promise.resolve({ error: "preview" }); };
   LocalBackend.prototype.icon = function () { return Promise.resolve(null); };
+  LocalBackend.prototype.icons = function () { return Promise.resolve({}); };
   LocalBackend.prototype.diag = function () {
     return Promise.resolve({ commands: "preview-mode (no device shell)", session_lock: "absent", files: "config:ok core:ok (preview)", boot_completed: "n/a",
       caps: { pm: "no", dumpsys: "no", am: "no", cmd: "no", getprop: "no", foreground: "none", pkg_query: "none", kill: "none", launcher: "" },
@@ -331,18 +345,33 @@
   function create() {
     var bridge = pickBridge();
     if (!bridge) return Promise.resolve(new LocalBackend());
-    var moddir = (bridge.ksu && ksuModDir(bridge.ksu)) || FALLBACK_MODDIRS[0];
-    var info = { found: bridge.name, exec: true, moddir: moddir, perm: "granted" };
-    var be = new DeviceBackend(bridge, moddir, info);
-    // Probe: harmless echo. Failure here (e.g. WebUI X SHELL denied)
-    // stays honest — preview mode WITH the reason attached.
-    return be._run("status").then(function () { return be; }).catch(function (err) {
-      info.exec = false;
-      info.perm = "denied (" + (err && err.message ? err.message : err) + ") — grant SHELL permission to this module in the WebUI host app";
-      try { ksuToast(bridge.ksu, "FGC: shell permission required"); } catch (e) {}
-      var lb = new LocalBackend(info);
+    var dirs = [];
+    try {
+      var mid = bridge.ksu && ksuModDir(bridge.ksu);
+      if (mid) dirs.push(mid);
+    } catch (e) { /* ignore */ }
+    FALLBACK_MODDIRS.forEach(function (d) { if (dirs.indexOf(d) < 0) dirs.push(d); });
+    function preview(reason) {
+      var lb = new LocalBackend({ found: bridge.name, exec: false, moddir: dirs[0] || null, perm: reason });
       lb.mode = "preview";
       return lb;
+    }
+    // 0. exec itself must work (a failure here means permission denial,
+    // not a wrong directory).
+    return bridge.exec("echo fgc-probe").then(function () {
+      // Try each candidate module dir; the first whose CLI answers wins.
+      // Never silently assume a fixed directory exists.
+      function attempt(i) {
+        if (i >= dirs.length) {
+          return Promise.resolve(preview("no candidate module dir answered (tried: " + dirs.join(", ") + ")"));
+        }
+        var be = new DeviceBackend(bridge, dirs[i], { found: bridge.name, exec: true, moddir: dirs[i], perm: "granted" });
+        return be._run("status").then(function () { return be; }).catch(function () { return attempt(i + 1); });
+      }
+      return attempt(0);
+    }).catch(function (err) {
+      try { ksuToast(bridge.ksu, "FGC: shell permission required"); } catch (e) {}
+      return preview("exec denied (" + (err && err.message ? err.message : err) + ") — grant SHELL permission to this module in the WebUI host app");
     });
   }
 
