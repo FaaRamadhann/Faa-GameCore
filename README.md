@@ -87,7 +87,19 @@ sudah Anda disable manual tidak disentuh (tercatat `already-disabled`).
 
 Unfreeze tahan-gagal: `pm enable` diulang, dan bila tetap gagal entry
 **disimpan** (bukan dibuang) untuk dicoba lagi saat sesi berakhir berikutnya /
-boot — jadi app tak pernah terjebak disabled permanen. Tipe paket yang tak
+boot — jadi app tak pernah terjebak disabled permanen. Tiga lapis pengaman:
+
+1. **Jurnal ditulis sebelum disable** (`frozen.txt` diisi *sebelum*
+   `pm disable-user`). `disable-user` itu persisten, jadi dulu crash/kill di
+   antara perintah dan pencatatan meninggalkan app disabled **tanpa jejak**
+   (frozen.txt kosong) — tak ada yang bisa memulihkannya. Sekarang urutannya
+   write-ahead; kalau disable ternyata gagal, entry dihapus lagi.
+2. **Core dijaga tetap hidup** oleh `service.sh` (restart otomatis bila daemon
+   mati). Daemon adalah satu-satunya yang meng-unfreeze saat game ditutup.
+3. **Titik pemulihan lain**: akhir sesi, `recovery.sh` saat boot, `status`
+   WebUI (bila daemon mati), dan `set enabled false`.
+
+Tipe paket yang tak
 bisa dibuktikan (`state/.syspkgs` hilang/kosong) dijawab `unknown` dan
 **di-skip** (fail-closed), bukan dianggap user-type.
 
@@ -231,6 +243,11 @@ menyediakan bitmap ikon — satu-satunya sumber adalah `PackageManager`:
   4 percobaan batch per baris); antrean ikon diambil per-chunk (≤8 package per
   exec) plus timeout per-exec sehingga satu exec yang menggantung tidak
   membekukan sisa baris.
+- Kalau `PackageManager` melempar exception saat inflate ikon (khas MIUI/HyperOS
+  tanpa `/data/system/theme_config/theme_compatibility.xml`), helper mengembalikan
+  kosong dan CLI mengambil bitmap **langsung dari APK** (`unzip -l`/`unzip -p`,
+  `ic_launcher`/`app_icon` densitas tertinggi, layer `foreground`/`background`
+  dilewati) — tanpa Java sama sekali. Hasilnya ikon asli, bukan huruf.
 
 ## Zygisk / LSPosed (companion, opsional)
 
@@ -259,11 +276,11 @@ foreground, satu cleanup per sesi (lock), dry-run tersedia, sleep-based poll
 ## Build / test
 
 ```sh
-python3 build.py                 # -> build/faagamecore-v1.3.0.zip
+python3 build.py                 # -> build/faagamecore-v1.3.1.zip
 python3 tests/test_webui.py
 sh tests/test_core.sh
 sh tests/check_syntax.sh         # POSIX syntax + lint mksh: '|' di dalam ${...} dilarang
-sh tools/version.sh              # bump patch -> 1.3.0 (131)
+sh tools/version.sh              # bump patch -> 1.3.1 (132)
 ```
 
 > Catatan portabilitas: di Android `/system/bin/sh` (mksh) sebuah `|` di dalam

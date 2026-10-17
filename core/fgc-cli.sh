@@ -109,6 +109,25 @@ cmd_status() {
   _game=""; _started=""; _prof="$_dp"; _lc=""
   _sj="$(cat "$FGC_STATE/session.json" 2>/dev/null)"
   [ -f "$FGC_STATE/session.lock" ] && _game="$(cat "$FGC_STATE/session.lock" 2>/dev/null)"
+  # Leftover freeze self-heal. An app can stay disabled after the game closed
+  # when the daemon died before it saw IDLE, or when a session end could not
+  # finish. While the daemon is alive it owns that decision; when it is gone,
+  # finish the session here instead of leaving apps disabled until the next boot.
+  # Throttled: the WebUI polls status, and an app that refuses to enable must not
+  # turn every poll into a pm retry storm. No-op in the normal case.
+  if [ -s "$FGC_STATE/frozen.txt" ] && [ "$_run" != "true" ]; then
+    _heal="$FGC_STATE/.heal_ts"
+    _hn="$(cat "$_heal" 2>/dev/null)"; [ -n "$_hn" ] || _hn=0
+    _now="$(date +%s 2>/dev/null)"; [ -n "$_now" ] || _now=0
+    if [ $((_now - _hn)) -ge 60 ]; then
+      printf '%s' "$_now" > "$_heal" 2>/dev/null
+      . "$CORE_DIR/session_controller.sh"
+      if [ -z "$_game" ] || ! fgc_pkg_running "$_game"; then
+        fgc_session_end >/dev/null 2>&1
+        _game=""
+      fi
+    fi
+  fi
   _lc="$(printf '%s' "$_sj" | grep -o '"last_cleanup"[ ]*:[ ]*"[^"]*"' | cut -d'"' -f4)"
   _ver="$(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2)"
   _dev="$(fgc_device_json 2>/dev/null)"; [ -n "$_dev" ] || _dev='{"manufacturer":"Unknown","model":"Unknown","android":"Unknown","sdk":"Unknown","root":"Not detected"}'
@@ -298,6 +317,12 @@ cmd_set() { # set <key> <value> | set profile <1..4> [package]
       fgc_cfg_set default_profile "$_pv" && echo '{"ok":true}' || echo '{"error":"set-failed"}'
     fi
   else
+    if [ "$1" = "enabled" ] && [ "$2" = "false" ] && [ -s "$FGC_STATE/frozen.txt" ]; then
+      # Turning the core OFF must not leave blacklist apps disabled: the daemon
+      # stops polling, so nothing would ever unfreeze them again.
+      . "$CORE_DIR/session_controller.sh"
+      fgc_session_end >/dev/null 2>&1
+    fi
     fgc_cfg_set "$1" "$2" && echo '{"ok":true}' || echo '{"error":"set-failed"}'
   fi
 }
@@ -315,9 +340,54 @@ cmd_session() {
         || { echo '{"error":"not-a-game"}'; return 1; }
       FGC_GAME="$2" fgc_session_start "$2" && echo '{"ok":true}' ;;
     session-end)
-      fgc_session_end && echo '{"ok":true}' ;;
+      fgc_session_end && echo '{"ok":true}' \
+        || { echo '{"error":"session-busy"}'; return 1; } ;;
     *) echo '{"error":"unknown session cmd"}'; return 1 ;;
   esac
+}
+
+fgc_apk_icon() {
+  # $1 = pkg -> base64 PNG taken straight out of the APK (no PackageManager).
+  # Last resort for ROMs where resource inflation throws (seen when the ROM's
+  # theme-compat file is missing): the app still ships a real launcher bitmap, so the row never has to fall back to a letter.
+  # Prints nothing and returns 1 when no usable entry exists (caller keeps its
+  # letter avatar), so this can never make an icon worse than it is today.
+  command -v unzip >/dev/null 2>&1 || return 1
+  _ak_pkg="$1"
+  _ak_apk=""
+  _ak_pm="$(fgc_run_timed 15 pm path "$_ak_pkg" 2>/dev/null)"
+  while IFS= read -r _ak_l || [ -n "$_ak_l" ]; do
+    case "$_ak_l" in package:*) _ak_apk="${_ak_l#package:}"; break ;; esac
+  done <<_FGC_AKPM
+$_ak_pm
+_FGC_AKPM
+  [ -n "$_ak_apk" ] && [ -f "$_ak_apk" ] || return 1
+  # Highest-density launcher bitmap wins. Foreground/background layers are
+  # skipped: they are partial (transparent) art, not a standalone icon.
+  _ak_best=""; _ak_score=-1
+  _ak_ls="$(unzip -l "$_ak_apk" 2>/dev/null)"
+  while IFS= read -r _ak_l || [ -n "$_ak_l" ]; do
+    # `unzip -l` pads size/date columns, so the entry is the LAST field (APK
+    # entry names never contain a space).
+    _ak_f=""
+    for _ak_w in $_ak_l; do _ak_f="$_ak_w"; done
+    [ -n "$_ak_f" ] || continue
+    case "$_ak_f" in *foreground*|*background*) continue ;; esac
+    case "$_ak_f" in *ic_launcher*|*app_icon*|*/icon.png) ;; *) continue ;; esac
+    case "$_ak_f" in *.png) ;; *) continue ;; esac
+    _ak_s=0
+    case "$_ak_f" in
+      *xxxhdpi*) _ak_s=6 ;; *xxhdpi*) _ak_s=5 ;; *xhdpi*) _ak_s=4 ;;
+      *hdpi*) _ak_s=3 ;; *mdpi*) _ak_s=2 ;; *ldpi*) _ak_s=1 ;;
+    esac
+    if [ "$_ak_s" -gt "$_ak_score" ]; then _ak_score="$_ak_s"; _ak_best="$_ak_f"; fi
+  done <<_FGC_AKLS
+$_ak_ls
+_FGC_AKLS
+  [ -n "$_ak_best" ] || return 1
+  _ak_b64="$(unzip -p "$_ak_apk" "$_ak_best" 2>/dev/null | base64 2>/dev/null | tr -d '\n\r ')"
+  case "$_ak_b64" in ''|*[!a-zA-Z0-9+/=]*) return 1 ;; esac
+  printf '%s' "$_ak_b64"
 }
 
 cmd_icon() {
@@ -339,6 +409,7 @@ cmd_icon() {
   _want="$2|g$_gen"
   if [ -s "$_cf" ] && [ "$(cat "$_vf" 2>/dev/null)" = "$_want" ]; then cat "$_cf"; return 0; fi
   _out="$(fgc_java icon "$1" 2>/dev/null)"
+  case "$_out" in ''|*[!a-zA-Z0-9+/=]*) _out="$(fgc_apk_icon "$1" 2>/dev/null)" ;; esac
   case "$_out" in
     ''|*[!a-zA-Z0-9+/=]*)
       # Regeneration failed. A stale-but-real icon still beats a letter avatar,
@@ -399,15 +470,29 @@ cmd_icons() {
   # full 8-icon batch therefore vanished and those rows kept their letter avatar
   # — the "icons sometimes show as letters" report. `|| [ -n "$_gp" ]` also keeps
   # the last row, which arrives without a trailing newline.
-  command -v app_process >/dev/null 2>&1 || return 0
-  app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb || [ -n "$_gp" ]; do
-    [ -n "$_gp" ] && [ -n "$_gb" ] || continue
-    case "$_gb" in *[!a-zA-Z0-9+/=]*) continue ;; esac
-    valid_pkg "$_gp" || continue
-    _gv="$(_verof "$_gp")"
-    printf '%s' "$_gb" > "$_cdir/$_gp.b64" 2>/dev/null
-    printf '%s' "$_gv|g$FGC_ICON_GEN" > "$_cdir/$_gp.ver" 2>/dev/null
-    printf '%s\t%s\n' "$_gp" "$_gb"
+  # Java helper (fast path). Skipped entirely when app_process is unavailable —
+  # the APK fallback below needs no Java.
+  if command -v app_process >/dev/null 2>&1; then
+    app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb || [ -n "$_gp" ]; do
+      [ -n "$_gp" ] && [ -n "$_gb" ] || continue
+      case "$_gb" in *[!a-zA-Z0-9+/=]*) continue ;; esac
+      valid_pkg "$_gp" || continue
+      _gv="$(_verof "$_gp")"
+      printf '%s' "$_gb" > "$_cdir/$_gp.b64" 2>/dev/null
+      printf '%s' "$_gv|g$FGC_ICON_GEN" > "$_cdir/$_gp.ver" 2>/dev/null
+      printf '%s\t%s\n' "$_gp" "$_gb"
+    done
+  fi
+  # Shell fallback for the packages the Java helper could not render. Runs only
+  # for rows that are still uncached, so a normal batch pays nothing for it.
+  for _p in $_jargs; do
+    [ -s "$_cdir/$_p.b64" ] && [ "$(cat "$_cdir/$_p.ver" 2>/dev/null)" = "$(_verof "$_p")|g$FGC_ICON_GEN" ] && continue
+    _gb="$(fgc_apk_icon "$_p" 2>/dev/null)"
+    [ -n "$_gb" ] || continue
+    _gv="$(_verof "$_p")"
+    printf '%s' "$_gb" > "$_cdir/$_p.b64" 2>/dev/null
+    printf '%s' "$_gv|g$FGC_ICON_GEN" > "$_cdir/$_p.ver" 2>/dev/null
+    printf '%s\t%s\n' "$_p" "$_gb"
   done
 }
 
@@ -468,7 +553,10 @@ cmd_diag() {
   _ng=0; _ng="$(grep -c '"package"' "$FGC_CONFIG/gamelist.json" 2>/dev/null)"; [ -n "$_ng" ] || _ng=0
   _nw="$(fgc_each_active "$FGC_CONFIG/whitelist.txt" 2>/dev/null | grep -c . 2>/dev/null)"; [ -n "$_nw" ] || _nw=0
   _nb="$(fgc_each_active "$FGC_CONFIG/blacklist.txt" 2>/dev/null | grep -c . 2>/dev/null)"; [ -n "$_nb" ] || _nb=0
-  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","icons_cached":%s,"cfg_games":%s,"cfg_white":%s,"cfg_black":%s,"caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_nic" "$_ng" "$_nw" "$_nb" "$_caps" "$_dev"
+  # Frozen entries still waiting to be re-enabled. Non-zero outside a session is
+  # the "session ended but apps still disabled" state; the WebUI drains it.
+  _nf=0; _nf="$(grep -c . "$FGC_STATE/frozen.txt" 2>/dev/null)"; [ -n "$_nf" ] || _nf=0
+  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","icons_cached":%s,"cfg_games":%s,"cfg_white":%s,"cfg_black":%s,"frozen":%s,"caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_nic" "$_ng" "$_nw" "$_nb" "$_nf" "$_caps" "$_dev"
 }
 
 case "$1" in

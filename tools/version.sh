@@ -15,4 +15,7 @@ esac
 NEW="$MAJ.$MIN.$PAT"; NEWCODE=$((CODE+1))
 sed -i "s/^version=.*/version=$NEW/" $PROP
 sed -i "s/^versionCode=.*/versionCode=$NEWCODE/" $PROP
+# WebUI assets are cache-busted by versionCode: bump them together, otherwise a
+# release ships ?v=<old> and the host WebView keeps running stale JS.
+[ -f webroot/index.html ] && sed -i "s/?v=[0-9][0-9]*/?v=$NEWCODE/g" webroot/index.html
 echo "Bumped to $NEW ($NEWCODE)"

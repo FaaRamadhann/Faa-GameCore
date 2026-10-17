@@ -44,6 +44,9 @@ cat > "$T/bin/pm" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "$STUB_PM_LOG"
 if [ "$1" = "disable-user" ]; then
+  # write-ahead journal probe: frozen.txt must ALREADY list the package here,
+  # otherwise a crash right after this command leaves it disabled with no record
+  cp "$STUB_FROZEN" "$STUB_PM_LOG.order" 2>/dev/null || true
   echo "Package ${@: -1} new state: disabled-user"   # real pm prints on STDOUT
   [ "$STUB_DISABLE_LIE" = "1" ] && exit 0             # lie: claims ok, no change
   printf 'package:%s\n' "${@: -1}" >> "$STUB_DISABLED"; exit 0
@@ -62,10 +65,18 @@ fi
 if [ "$1" = "path" ]; then
   # existence probe: answers for DISABLED packages too; gone => no output.
   case "${@: -1}" in com.gone.app) exit 0 ;; esac
+  case "${@: -1}" in com.apkicon*.app) echo "package:$STUB_APK"; exit 0 ;; esac
   echo "package:/data/app/${@: -1}/base.apk"; exit 0
 fi
 if [ "$1" = "list" ] && [ "$3" = "-d" ]; then
   [ "$STUB_LIST_FAIL" = "1" ] && { echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2; }
+  # Fail only the SECOND disabled-snapshot of a run, i.e. the post-enable
+  # verification (the first one is the up-front gate).
+  if [ "$STUB_LIST_FAIL_2ND" = "1" ]; then
+    _n=$(cat "$STUB_PM_LOG.count" 2>/dev/null); [ -n "$_n" ] || _n=0
+    _n=$((_n+1)); printf '%s' "$_n" > "$STUB_PM_LOG.count"
+    [ "$_n" -ge 2 ] && { echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2; }
+  fi
   cat "$STUB_DISABLED" 2>/dev/null; exit 0
 fi
 if [ "$3" = "-s" ]; then echo "package:android"; echo "package:com.android.systemui"; echo "package:com.android.settings"; exit 0; fi
@@ -74,6 +85,26 @@ echo "package:com.evil.app"
 echo "package:com.whatsapp"
 echo "package:android"
 echo "package:com.android.systemui"
+EOF
+cat > "$T/bin/unzip" <<'EOF'
+#!/usr/bin/env bash
+# Only the entries the icon fallback should consider are listed. The wrong
+# choices are present on purpose: a low-density bitmap and a foreground layer.
+if [ "$1" = "-l" ]; then
+  echo "Archive:  $2"
+  echo " 100  2020-01-01 00:00   res/mipmap-hdpi-v4/ic_launcher.png"
+  echo " 900  2020-01-01 00:00   res/mipmap-xxxhdpi-v4/ic_launcher.png"
+  echo " 800  2020-01-01 00:00   res/mipmap-xxxhdpi-v4/ic_launcher_foreground.png"
+  echo "  10  2020-01-01 00:00   res/mipmap-anydpi-v26/ic_launcher.xml"
+  exit 0
+fi
+if [ "$1" = "-p" ]; then
+  case "$3" in
+    res/mipmap-xxxhdpi-v4/ic_launcher.png) printf 'APKICON'; exit 0 ;;
+  esac
+  exit 1
+fi
+exit 1
 EOF
 cat > "$T/bin/dumpsys" <<'EOF'
 #!/usr/bin/env bash
@@ -106,7 +137,10 @@ if [ "$4" = "list" ]; then
   printf 'com.stub.game\tStub Game\tuser\t123\ncom.stub.sys\tStub Sys\tsystem\t7\n'
   exit 0
 fi
-if [ "$4" = "icon" ]; then echo "aVBORw0KGgo="; exit 0; fi
+if [ "$4" = "icon" ]; then
+  case "$5" in com.apkicon*.app) exit 1 ;; esac
+  echo "aVBORw0KGgo="; exit 0
+fi
 if [ "$4" = "icons" ]; then
   # One row per requested package, WITHOUT a trailing newline at the very end:
   # that is what `$(...)` in fgc_java produces, and the CLI must still read the
@@ -114,6 +148,7 @@ if [ "$4" = "icons" ]; then
   shift 4; first=1
   for p in "$@"; do
     [ "$p" = "com.missing.pkg" ] && continue
+    case "$p" in com.apkicon*.app) continue ;; esac
     [ "$first" = "1" ] || printf '\n'
     first=0
     printf '%s\taVBORw0KGgo=' "$p"
@@ -129,7 +164,8 @@ cat "$STUB_PS_FILE" 2>/dev/null
 EOF
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH"
-export STUB_AM_LOG="$T/am.log" STUB_PS_FILE="$T/ps.txt" STUB_PM_LOG="$T/pm.log" STUB_DISABLED="$T/disabled.txt"
+export STUB_AM_LOG="$T/am.log" STUB_PS_FILE="$T/ps.txt" STUB_PM_LOG="$T/pm.log" STUB_DISABLED="$T/disabled.txt" STUB_FROZEN="$T/data/state/frozen.txt"
+export STUB_APK="$T/fake.apk"; printf 'PK\003\004' > "$STUB_APK"
 : > "$T/am.log"; : > "$T/ps.txt"; : > "$T/pm.log"; : > "$T/disabled.txt"
 CLI="bash $M/core/fgc-cli.sh"
 
@@ -250,6 +286,13 @@ out=$($CLI icon com.test.game)
 [ "$out" = "aVBORw0KGgo=" ] && [ -f "$T/data/state/icons/com.test.game.b64" ] && { echo "PASS icon cache"; pass=$((pass+1)); } || { echo "FAIL icon -- got: $out"; fail=$((fail+1)); }
 out=$($CLI icons com.test.game com.missing.pkg)
 printf '%s\n' "$out" | grep -qx 'com.test.game	aVBORw0KGgo=' && ! printf '%s\n' "$out" | grep -q 'com.missing' && { echo "PASS icons batch"; pass=$((pass+1)); } || { echo "FAIL icons batch -- got: $out"; fail=$((fail+1)); }
+# ROM where resource inflation throws (MIUI with theme_compatibility.xml missing):
+# the Java helper returns nothing, so the shell fallback must pull the launcher
+# bitmap straight out of the APK — biggest density, never a layer image.
+out=$($CLI icon com.apkicon.app 2>/dev/null)
+[ "$out" = "QVBLSUNPTg==" ] && { echo "PASS icon apk fallback"; pass=$((pass+1)); } || { echo "FAIL icon apk fallback -- got: [$out]"; fail=$((fail+1)); }
+out=$($CLI icons com.apkicon2.app)
+printf '%s\n' "$out" | grep -qx 'com.apkicon2.app	QVBLSUNPTg==' && { echo "PASS icons batch apk fallback"; pass=$((pass+1)); } || { echo "FAIL icons batch apk fallback -- got: [$out]"; fail=$((fail+1)); }
 # The LAST row of a batch arrives without a trailing newline (fgc_java uses
 # $(...)). Dropping it was the "icons sometimes show as letters" bug: the last
 # icon of every chunk never landed.
@@ -343,9 +386,12 @@ out=$($CLI set default_profile 2) >/dev/null
 out=$($CLI set default_profile 3) >/dev/null
 out=$($CLI add blacklist com.android.settings) >/dev/null
 printf 'u0_a1 123 456 com.evil.app\nu0_a1 124 457 com.android.settings\n' > "$T/ps.txt"
-: > "$T/pm.log"; : > "$T/data/state/frozen.txt"
+: > "$T/pm.log"; : > "$T/data/state/frozen.txt"; rm -f "$T/pm.log.order"
 out=$($CLI set default_profile 3) >/dev/null
 out=$($CLI session-start com.test.game)
+# write-ahead journal: the record must exist BEFORE pm disable-user runs, so a
+# crash/kill mid-command can never orphan a disabled app with no way back.
+if grep -qx 'com.evil.app' "$T/pm.log.order" 2>/dev/null; then echo "PASS freeze journaled before disable"; pass=$((pass+1)); else echo "FAIL freeze journaled before disable"; fail=$((fail+1)); fi
 if grep -q 'disable-user.*com.evil.app' "$T/pm.log" && ! grep -q 'disable-user.*com.android.settings' "$T/pm.log"; then echo "PASS freeze user-only"; pass=$((pass+1)); else echo "FAIL freeze user-only"; fail=$((fail+1)); fi
 if grep -qx 'com.evil.app' "$T/data/state/frozen.txt"; then echo "PASS frozen tracked"; pass=$((pass+1)); else echo "FAIL frozen tracked"; fail=$((fail+1)); fi
 out=$($CLI session-end)
@@ -409,6 +455,45 @@ printf 'package:com.busy.app\n' > "$T/disabled.txt"
 : > "$T/pm.log"
 STUB_LIST_FAIL=1 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -qx 'com.busy.app' "$T/data/state/frozen.txt" && ! grep -q 'enable' "$T/pm.log" && $CLI list logs | grep -q 'package-service-busy'; then echo "PASS busy service defers"; pass=$((pass+1)); else echo "FAIL busy service defers"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"
+# The POST-enable verification snapshot failing must NOT drop the entry: we
+# cannot prove the app is back, and dropping it here is how an app ended up
+# disabled forever with an empty frozen.txt (nothing left to retry).
+printf 'com.verify.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.verify.app\n' > "$T/disabled.txt"
+: > "$T/pm.log"; rm -f "$T/pm.log.count"
+STUB_LIST_FAIL_2ND=1 bash "$M/core/recovery.sh" >/dev/null 2>&1
+if grep -qx 'com.verify.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'unverified'; then echo "PASS unverified enable kept for retry"; pass=$((pass+1)); else echo "FAIL unverified enable kept for retry"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"; rm -f "$T/pm.log.count"
+# A stale sessop lock whose PID now belongs to an UNRELATED live process used to
+# block every session end for 15s and then silently give up (apps stayed frozen).
+sleep 30 & _bogus=$!
+mkdir -p "$T/data/state/sessop.lock"; printf '%s' "$_bogus" > "$T/data/state/sessop.lock/pid"
+printf 'com.reused.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.reused.app\n' > "$T/disabled.txt"
+: > "$T/pm.log"
+out=$($CLI session-end)
+kill "$_bogus" 2>/dev/null; wait "$_bogus" 2>/dev/null
+# No wall-clock assertion: a slow host (msys forks ~2s per stub call) would make
+# it flaky. {"ok":true} already proves the lock was NOT waited out (15x1s).
+if [ "$out" = '{"ok":true}' ] && grep -q 'enable.*com.reused.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS reused-pid lock reclaimed"; pass=$((pass+1)); else echo "FAIL reused-pid lock reclaimed (out=$out)"; fail=$((fail+1)); fi
+rm -rf "$T/data/state/sessop.lock"
+# Daemon gone: a WebUI refresh (status) must finish the leftover session instead
+# of leaving blacklist apps disabled until the next reboot.
+printf 'com.left.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.left.app\n' > "$T/disabled.txt"
+rm -f "$T/data/state/session.lock"; rm -rf "$T/data/state/daemon.lock"
+: > "$T/pm.log"
+out=$($CLI status)
+if grep -q 'enable.*com.left.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS status drains leftover freeze"; pass=$((pass+1)); else echo "FAIL status drains leftover freeze"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"
+# Turning the core OFF stops the daemon, so it must drain frozen entries itself.
+printf 'com.off.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.off.app\n' > "$T/disabled.txt"
+: > "$T/pm.log"
+out=$($CLI set enabled false)
+if grep -q 'enable.*com.off.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS disable core unfreezes"; pass=$((pass+1)); else echo "FAIL disable core unfreezes"; fail=$((fail+1)); fi
+$CLI set enabled true >/dev/null 2>&1
 : > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"
 # CLI stdout must stay VALID JSON: pm chatter is silenced, so the WebUI's
 # JSON.parse never sees "Package X new state: ..." before the reply.

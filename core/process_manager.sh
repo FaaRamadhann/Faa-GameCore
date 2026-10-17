@@ -31,6 +31,17 @@ fgc_frozen_add() {
   printf '%s\n' "$1" >> "$_fp" 2>/dev/null
 }
 
+fgc_frozen_del() {
+  # $1 = pkg; drop one entry (atomic rewrite). Used when a disable provably did
+  # not happen, so we never "restore" something we never changed.
+  _fp="$FGC_STATE/frozen.txt"
+  [ -f "$_fp" ] || return 0
+  grep -vx "$1" "$_fp" > "$_fp.tmp" 2>/dev/null
+  [ "$?" -le 1 ] || { rm -f "$_fp.tmp" 2>/dev/null; return 1; }
+  mv "$_fp.tmp" "$_fp" 2>/dev/null || { rm -f "$_fp.tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
 fgc_freeze() {
   # args: exact package names. pm disable-user (fully reversible, unlike
   # force-stop which apps can escape via autostart). User-type ONLY, always —
@@ -70,6 +81,13 @@ fgc_freeze() {
     fi
     if fgc_dry_run; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "dry-run"; continue; fi
     if grep -qx "package:$_p" "$_fdl" 2>/dev/null; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "already-disabled"; continue; fi
+    # Write-ahead journal: record the intent BEFORE disabling. `pm disable-user`
+    # is persistent, so a crash/kill between the command and the bookkeeping used
+    # to leave the app disabled with an EMPTY frozen.txt — nothing left to
+    # restore, and the app stayed off until the user re-enabled it by hand.
+    # Recording first is safe: unfreeze retires an entry that turns out not to be
+    # disabled, so a failed disable costs one log line, never a wrong "enable".
+    fgc_frozen_add "$_p"
     # stdout MUST be silenced: pm prints "Package X new state: ..." on STDOUT,
     # which would corrupt the CLI's JSON response (captured by the WebUI) and
     # the fgc_cleanup summary line. Stderr too (binder "Failed transaction").
@@ -95,14 +113,17 @@ fgc_freeze() {
       if [ "$_canv" = "1" ]; then
         if grep -qx "package:$_p" "$_live" 2>/dev/null; then
           fgc_log "CLEANUP_SUCCESS" "$_p" "freeze" "frozen" ""
-          fgc_frozen_add "$_p"
         else
+          # Proven NOT disabled: drop the write-ahead entry, otherwise unfreeze
+          # would later "restore" an app we never changed.
+          fgc_frozen_del "$_p"
           fgc_log "CLEANUP_FAILED" "$_p" "freeze" "failed" "not-disabled-after-cmd"
         fi
       elif [ "$_rc" = "0" ]; then
         fgc_log "CLEANUP_SUCCESS" "$_p" "freeze" "frozen" "unverified"
-        fgc_frozen_add "$_p"
       else
+        # Cannot prove either way: KEEP the journal entry. Unfreeze retires it
+        # if it turns out not to be disabled, so keeping is always the safe side.
         fgc_log "CLEANUP_FAILED" "$_p" "freeze" "failed" "pm-error"
       fi
     done < "$_fdl.rc"
@@ -217,7 +238,13 @@ fgc_unfreeze_all() {
       elif [ "$_canv" = "1" ]; then
         fgc_log "$_ev" "$_p" "unfreeze" "enabled" ""
       else
-        fgc_log "$_ev" "$_p" "unfreeze" "enabled" "unverified"
+        # The verify snapshot itself failed, so we CANNOT prove the app is back.
+        # Dropping it here (the old "enabled unverified") is exactly how an app
+        # ended up disabled forever with an empty frozen.txt: nothing left to
+        # retry, no session end left to run. Keep it and retry.
+        _keep="$_keep$_p
+"
+        fgc_log "$_ev" "$_p" "unfreeze" "deferred" "unverified"
       fi
     done <<_FGC_OK
 $_oklist

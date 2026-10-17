@@ -42,7 +42,13 @@ fgc_sess_lock() {
   while [ "$_t" -lt 15 ]; do
     if mkdir "$SESSLOCK" 2>/dev/null; then printf '%s' "$$" > "$SESSLOCK/pid" 2>/dev/null; return 0; fi
     _op="$(cat "$SESSLOCK/pid" 2>/dev/null)"
-    if [ -n "$_op" ] && [ "$_op" != "$$" ] && kill -0 "$_op" 2>/dev/null; then
+    # kill -0 alone is not enough: after a reboot the recorded PID is usually
+    # taken by an unrelated process, so the lock looked held FOREVER and every
+    # session end silently gave up (apps stayed disabled). The holder must also
+    # be one of our own scripts.
+    if [ -n "$_op" ] && [ "$_op" != "$$" ] && kill -0 "$_op" 2>/dev/null \
+       && tr '\0' ' ' < "/proc/$_op/cmdline" 2>/dev/null \
+          | grep -q -e 'core/main.sh' -e 'core/fgc-cli.sh'; then
       sleep 1; _t=$((_t+1)); continue
     fi
     rm -rf "$SESSLOCK" 2>/dev/null
@@ -115,7 +121,9 @@ _fgc_session_start_locked() {
 }
 
 fgc_session_end() {
-  fgc_sess_lock || return 0
+  # A lock we could not take means NOTHING was unfrozen: never report success
+  # (the WebUI used to show "session ended" while the apps stayed disabled).
+  fgc_sess_lock || { fgc_log "CORE_ERROR" "" "session" "busy" "sessop-lock"; return 1; }
   _fgc_session_end_locked
   _rc=$?
   fgc_sess_unlock
