@@ -158,7 +158,8 @@
     for (i = 0; i < pkg.length; i++) h = (h * 31 + pkg.charCodeAt(i)) % 360;
     return "linear-gradient(135deg,hsl(" + h + ",55%,32%),hsl(" + ((h + 40) % 360) + ",70%,48%))";
   }
-  var iconCache = {}, iconQueue = [], iconBusy = false, iconObs = null, iconSweepT = null;
+  var iconCache = {}, iconQueue = [], iconDefer = [], iconBusy = false, iconObs = null, iconSweepT = null, iconRetryT = null;
+  var ICON_BATCH = 8;   // pkgs per helper exec (JVM startup dominates the cost)
   function queueIcon(img) {
     // Lazy: only fetch when the row scrolls into view; one fetch at a time.
     // Plus a viewport sweep fallback: some WebViews never fire IntersectionObserver.
@@ -193,15 +194,29 @@
   function fetchIcon(img) {
     var pkg = img.dataset.pkg;
     if (!pkg || img.dataset.done || img.dataset.queued) return;
-    var tries = parseInt(img.dataset.tries || "0", 10);
-    // Bounded retries: a failed fetch stays retryable across re-renders, but
-    // never more than 4 attempts per image (then the letter avatar stands).
-    if (tries >= 4) { img.dataset.done = "1"; return; }
-    img.dataset.tries = String(tries + 1);
     if (iconCache[pkg]) { showIcon(img, iconCache[pkg]); return; }
+    // Bounded retries: the letter avatar only stands after 4 failed batches.
+    if (parseInt(img.dataset.tries || "0", 10) >= 4) { img.dataset.done = "1"; return; }
     img.dataset.queued = "1";
     iconQueue.push(img);
     pumpIcons();
+  }
+  function requeueLater(imgs) {
+    // A failed batch is retried, not re-queued in a tight loop: the images wait
+    // in a side list and the queue is refilled by one timer.
+    for (var i = 0; i < imgs.length; i++) {
+      var im = imgs[i];
+      if (im.dataset.done || im.dataset.queued) continue;
+      im.dataset.queued = "1";
+      iconDefer.push(im);
+    }
+    if (!iconDefer.length || iconRetryT) return;
+    iconRetryT = setTimeout(function () {
+      iconRetryT = null;
+      iconQueue = iconQueue.concat(iconDefer);
+      iconDefer = [];
+      pumpIcons();
+    }, 2500);
   }
   function withTimeout(p, ms) {
     // A hanging bridge exec must never wedge the queue: with iconBusy stuck
@@ -217,20 +232,39 @@
   }
   function pumpIcons() {
     if (iconBusy) return;
-    var img = iconQueue.shift();
-    if (!img) return;
-    delete img.dataset.queued;
+    // Take a CHUNK off the queue and resolve it with ONE helper exec: the JVM
+    // startup dominates, so per-row execs left long lists (405 packages on a
+    // phone) sitting on their letter avatars for a minute or more — which is
+    // exactly the "icons sometimes show as letters" bug.
+    var batch = [], tokens = [], tseen = {}, i;
+    while (iconQueue.length && batch.length < ICON_BATCH) {
+      var q = iconQueue.shift();
+      if (!q || !q.dataset.pkg || q.dataset.done) continue;
+      delete q.dataset.queued;
+      batch.push(q);
+      var v = (state.pkgVers && state.pkgVers[q.dataset.pkg]) || "";
+      var tok = q.dataset.pkg + (v ? "=" + v : "");
+      if (!tseen[tok]) { tseen[tok] = 1; tokens.push(tok); }
+    }
+    if (!batch.length) return;
     iconBusy = true;
-    // Macrotask yield: on sync bridges each fetch blocks the thread for a
-    // second or more — without this the UI freezes through the whole queue.
-    var pkg = img.dataset.pkg;
-    var ver = (state.pkgVers && state.pkgVers[pkg]) || "";
+    var settle = function (map) {
+      iconBusy = false;
+      var failed = [];
+      for (i = 0; i < batch.length; i++) {
+        var im = batch[i], url = map && map[im.dataset.pkg];
+        if (url) { iconCache[im.dataset.pkg] = url; showIcon(im, url); continue; }
+        var t = parseInt(im.dataset.tries || "0", 10) + 1;
+        im.dataset.tries = String(t);
+        if (t >= 4) { im.dataset.done = "1"; }   // give up: the letter stands
+        else failed.push(im);
+      }
+      if (failed.length) requeueLater(failed);
+      pumpIcons();
+    };
+    // Macrotask yield: on sync bridges each exec blocks the UI thread.
     setTimeout(function () {
-      withTimeout(backend.icon(pkg, ver), 25000).then(function (url) {
-        iconBusy = false;
-        if (url) { iconCache[pkg] = url; showIcon(img, url); }
-        pumpIcons();
-      }).catch(function () { iconBusy = false; pumpIcons(); });
+      withTimeout(backend.icons(tokens), 60000).then(settle, function () { settle(null); });
     }, 30);
   }
   function paintCachedIcons() {
@@ -251,7 +285,12 @@
     (state.black || []).forEach(function (x) { if (x) add(x.pkg); });
     (state.white || []).forEach(function (x) { if (x) add(x.pkg); });
     if (!want.length) return Promise.resolve();
-    return backend.icons(want).then(function (map) {
+    // Version-aware tokens: an app update retires exactly its own cached bitmap.
+    var toks = want.map(function (p) {
+      var v = (state.pkgVers && state.pkgVers[p]) || "";
+      return v ? p + "=" + v : p;
+    });
+    return backend.icons(toks).then(function (map) {
       var changed = false, k;
       for (k in map) {
         if (map.hasOwnProperty(k) && map[k] && !iconCache[k]) { iconCache[k] = map[k]; changed = true; }
@@ -293,7 +332,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.2.5";
+  var UI_VERSION = "1.2.6";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -519,18 +558,21 @@
       var rows = sortMembersFirst(universe(members, cfg[5]).filter(function (r) {
         // Configured entries are ALWAYS listed — never hidden by the type tab
         // nor by an empty search box — so the tab can never misrepresent the
-        // config. Installed non-members surface only while searching and only
-        // in the matching type tab, keeping "search to add" a single tap.
+        // config. Installed non-members are listed too, filtered only by the
+        // type tab and the search term (same rule as the Gamelist page): the
+        // page must always show a usable app list, because a members-only view
+        // with no search term made an empty/broken read look like "the module
+        // lost my lists" and left no app to tap.
         if (r.member) return matchTerm(r, term);
-        return !!term && inTab(r.pkg, cfg[4]) && matchTerm(r, term);
+        return inTab(r.pkg, cfg[4]) && matchTerm(r, term);
       }));
       if (!rows.length) {
         if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
         box.innerHTML = '<div class="empty"><div class="big">' +
-          (members.length ? "Tidak ada yang cocok" : "Daftar kosong") + "</div>" +
+          (members.length || term ? "Tidak ada yang cocok" : "Daftar kosong") + "</div>" +
           (backend.mode === "preview" && !members.length
             ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat."
-            : (term ? "Tidak ada aplikasi yang cocok dengan pencarian." : "Belum ada paket di daftar ini — ketik untuk mencari lalu tambahkan.")) + "</div>";
+            : (term ? "Tidak ada aplikasi yang cocok dengan pencarian / tab ini." : "Daftar aplikasi perangkat belum terbaca — tekan Refresh.")) + "</div>";
         return;
       }
       renderPaged(box, rows, function (r) {
@@ -805,7 +847,7 @@
       if (!target) { box.innerHTML = '<div class="empty">Tidak ada package untuk diuji.</div>'; return; }
       box.innerHTML = '<div class="skel" style="height:60px"></div>';
       var t0 = Date.now();
-      backend.icon(target).then(function (url) {
+      backend.icon(target, (state.pkgVers && state.pkgVers[target]) || "").then(function (url) {
         var ms = Date.now() - t0;
         if (url) {
           box.innerHTML = '<div class="kv"><span>Icon probe</span><b>' + esc(target) + " • " + ms + 'ms</b></div><div style="margin:8px 0"><img alt="probe" style="width:72px;height:72px;border-radius:16px"></div>';

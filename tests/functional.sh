@@ -64,7 +64,10 @@ if [ "$1" = "path" ]; then
   case "${@: -1}" in com.gone.app) exit 0 ;; esac
   echo "package:/data/app/${@: -1}/base.apk"; exit 0
 fi
-if [ "$1" = "list" ] && [ "$3" = "-d" ]; then cat "$STUB_DISABLED" 2>/dev/null; exit 0; fi
+if [ "$1" = "list" ] && [ "$3" = "-d" ]; then
+  [ "$STUB_LIST_FAIL" = "1" ] && { echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2; }
+  cat "$STUB_DISABLED" 2>/dev/null; exit 0
+fi
 if [ "$3" = "-s" ]; then echo "package:android"; echo "package:com.android.systemui"; echo "package:com.android.settings"; exit 0; fi
 echo "package:com.test.game"
 echo "package:com.evil.app"
@@ -100,7 +103,7 @@ cat > "$T/bin/app_process" <<'EOF'
 # stub Java helper: responds like FgcPm for ping/list/icon
 if [ "$4" = "ping" ]; then echo pong; exit 0; fi
 if [ "$4" = "list" ]; then
-  printf 'com.stub.game\tStub Game\tuser\ncom.stub.sys\tStub Sys\tsystem\n'
+  printf 'com.stub.game\tStub Game\tuser\t123\ncom.stub.sys\tStub Sys\tsystem\t7\n'
   exit 0
 fi
 if [ "$4" = "icon" ]; then echo "aVBORw0KGgo="; exit 0; fi
@@ -120,6 +123,7 @@ pass=0; fail=0
 ck() { # ck <desc> <expected-substring> <actual>
   if [[ "$3" == *"$2"* ]]; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1 -- got: $3"; fail=$((fail+1)); fi
 }
+TAB=$'\t'   # list packages columns are tab separated (4th = versionCode)
 
 out=$($CLI status);            ck "status STOPPED (no daemon)" '"core":"STOPPED"' "$out"
 out=$(STUB_BOOT=0 $CLI status); ck "status STARTING pre-boot" '"core":"STARTING"' "$out"
@@ -136,14 +140,20 @@ out=$($CLI remove games com.drop.me); ck "remove pretty-listed" '"ok":true' "$ou
 if grep -q '"package": "com.keep.me"' "$T/data/config/gamelist.json" && ! grep -q 'com.drop.me' "$T/data/config/gamelist.json"; then echo "PASS pretty remove preserves"; pass=$((pass+1)); else echo "FAIL pretty remove"; fail=$((fail+1)); fi
 out=$($CLI add games com.test.game TestGame 0); ck "restore test game" '"ok":true' "$out"
 out=$($CLI set profile 3 com.test.game); ck "set per-game profile" '"ok":true' "$out"
-grep -q '"package": "com.test.game"[^}]*"profile": 3' "$T/data/config/gamelist.json" && { echo "PASS per-game stored"; pass=$((pass+1)); } || { echo "FAIL per-game stored"; fail=$((fail+1)); }
+# gamelist.json is stored PRETTY (readable + hand-editable) ...
+GL="$T/data/config/gamelist.json"
+if grep -q '^{"games": \[$' "$GL" && grep -q '^        "package": "com.test.game",$' "$GL" && grep -q '^        "profile": 3$' "$GL" && grep -q '^    }$' "$GL" && [ "$(tail -n 1 "$GL")" = "]}" ]; then
+  echo "PASS gamelist pretty layout"; pass=$((pass+1))
+else echo "FAIL gamelist pretty layout -- got: $(cat "$GL")"; fail=$((fail+1)); fi
+# ... while readers stay layout-tolerant (the compacted file must agree).
+if tr -d '\n\r' < "$GL" | grep -q '"package": "com.test.game"[^}]*"profile": 3'; then echo "PASS per-game stored"; pass=$((pass+1)); else echo "FAIL per-game stored"; fail=$((fail+1)); fi
 out=$($CLI set profile 0 com.test.game); ck "reset per-game default" '"ok":true' "$out"
 out=$($CLI set profile 9 com.test.game); ck "reject bad per-game" 'invalid profile' "$out"
 out=$($CLI list games);        ck "list games has pkg" 'com.test.game' "$out"
 out=$($CLI list);               ck "bare list defaults games" 'com.test.game' "$out"
 mkdir -p "$T/empty/config" "$T/empty/state" "$T/empty/logs"
 out=$(FGC_DATA="$T/empty" $CLI list games)
-[[ "$out" == *'"games":[]'* ]] && [ -f "$T/empty/config/gamelist.json" ] && { echo "PASS missing gamelist self-heals"; pass=$((pass+1)); } || { echo "FAIL gamelist heal -- got: $out"; fail=$((fail+1)); }
+[[ "$out" == *'"games": []'* ]] && [ -f "$T/empty/config/gamelist.json" ] && { echo "PASS missing gamelist self-heals"; pass=$((pass+1)); } || { echo "FAIL gamelist heal -- got: $out"; fail=$((fail+1)); }
 out=$($CLI add blacklist com.evil.app);  ck "blacklist add" '"ok":true' "$out"
 out=$($CLI add blacklist com.evil.app);   ck "reject duplicate blacklist" 'duplicate' "$out"
 out=$($CLI add whitelist com.evil.app);   ck "whitelist add" '"ok":true' "$out"
@@ -203,19 +213,21 @@ out=$(STUB_DUMPSYS=old bash "$M/core/event_detector.sh"); ck "detector finds gam
 out=$(STUB_DUMPSYS=weird bash "$M/core/event_detector.sh"); ck "unknown rom degrades IDLE" 'IDLE' "$out"
 out=$($CLI icon com.no.helper.here 2>/dev/null); ck "icon unavailable w/o helper" 'icon-unavailable' "$out"
 out=$($CLI list packages); ck "pm stub packages" 'com.whatsapp' "$out"
-printf '%s\n' "$out" | grep -x 'android	StubApp	system' >/dev/null && { echo "PASS pkg type system"; pass=$((pass+1)); } || { echo "FAIL pkg type system -- got: $out"; fail=$((fail+1)); }
-printf '%s\n' "$out" | grep -x 'com.test.game	StubApp	user' >/dev/null && { echo "PASS pkg type user"; pass=$((pass+1)); } || { echo "FAIL pkg type user -- got: $out"; fail=$((fail+1)); }
-printf '%s\n' "$out" | grep -x 'com.evil.app	Evil App	user' >/dev/null && { echo "PASS quoted label w/ space"; pass=$((pass+1)); } || { echo "FAIL quoted label -- got: $out"; fail=$((fail+1)); }
+# list packages: pkg<TAB>label<TAB>type<TAB>version. Assertions anchor on the
+# tab-separated fields so a 4th column can never sneak past a type filter check.
+printf '%s\n' "$out" | grep -q "^android${TAB}StubApp${TAB}system${TAB}" >/dev/null && { echo "PASS pkg type system"; pass=$((pass+1)); } || { echo "FAIL pkg type system -- got: $out"; fail=$((fail+1)); }
+printf '%s\n' "$out" | grep -q "^com.test.game${TAB}StubApp${TAB}user${TAB}" >/dev/null && { echo "PASS pkg type user"; pass=$((pass+1)); } || { echo "FAIL pkg type user -- got: $out"; fail=$((fail+1)); }
+printf '%s\n' "$out" | grep -q "^com.evil.app${TAB}Evil App${TAB}user${TAB}" >/dev/null && { echo "PASS quoted label w/ space"; pass=$((pass+1)); } || { echo "FAIL quoted label -- got: $out"; fail=$((fail+1)); }
 out=$($CLI list packages user)
-if printf '%s\n' "$out" | grep -x 'android	StubApp	system' >/dev/null; then echo "FAIL user filter"; fail=$((fail+1)); else echo "PASS user filter"; pass=$((pass+1)); fi
+if printf '%s\n' "$out" | grep -q "^android${TAB}StubApp${TAB}system${TAB}"; then echo "FAIL user filter"; fail=$((fail+1)); else echo "PASS user filter"; pass=$((pass+1)); fi
 out=$($CLI list packages system)
-if printf '%s\n' "$out" | grep -x 'android	StubApp	system' >/dev/null && ! printf '%s\n' "$out" | grep -x 'com.test.game	StubApp	user' >/dev/null; then echo "PASS system filter"; pass=$((pass+1)); else echo "FAIL system filter -- got: $out"; fail=$((fail+1)); fi
+if printf '%s\n' "$out" | grep -q "^android${TAB}StubApp${TAB}system${TAB}" && ! printf '%s\n' "$out" | grep -q "^com.test.game${TAB}"; then echo "PASS system filter"; pass=$((pass+1)); else echo "FAIL system filter -- got: $out"; fail=$((fail+1)); fi
 # java helper path (FgcPm via app_process stub): real labels, icon cache, caps
 mkdir -p "$M/bin"; cp bin/fgc-pm.dex "$M/bin/" 2>/dev/null || echo "fake-dex" > "$M/bin/fgc-pm.dex"
 out=$($CLI list packages)
-printf '%s\n' "$out" | grep -x 'com.stub.game	Stub Game	user' >/dev/null && { echo "PASS java list labels"; pass=$((pass+1)); } || { echo "FAIL java list -- got: $out"; fail=$((fail+1)); }
+printf '%s\n' "$out" | grep -qx "com.stub.game${TAB}Stub Game${TAB}user${TAB}123" >/dev/null && { echo "PASS java list labels"; pass=$((pass+1)); } || { echo "FAIL java list -- got: $out"; fail=$((fail+1)); }
 out=$($CLI list packages user)
-if printf '%s\n' "$out" | grep -x 'com.stub.game	Stub Game	user' >/dev/null && ! printf '%s\n' "$out" | grep -q 'com.stub.sys'; then echo "PASS java user filter"; pass=$((pass+1)); else echo "FAIL java user filter -- got: $out"; fail=$((fail+1)); fi
+if printf '%s\n' "$out" | grep -q "^com.stub.game${TAB}Stub Game${TAB}user${TAB}123" >/dev/null && ! printf '%s\n' "$out" | grep -q 'com.stub.sys'; then echo "PASS java user filter"; pass=$((pass+1)); else echo "FAIL java user filter -- got: $out"; fail=$((fail+1)); fi
 out=$($CLI icon com.test.game)
 [ "$out" = "aVBORw0KGgo=" ] && [ -f "$T/data/state/icons/com.test.game.b64" ] && { echo "PASS icon cache"; pass=$((pass+1)); } || { echo "FAIL icon -- got: $out"; fail=$((fail+1)); }
 out=$($CLI icons com.test.game com.missing.pkg)
@@ -327,6 +339,7 @@ out=$($CLI session-start com.test.game); out=$($CLI session-end) >/dev/null
 if grep -q 'disable-user' "$T/pm.log"; then echo "FAIL p1 no-freeze"; fail=$((fail+1)); else echo "PASS p1 no-freeze"; pass=$((pass+1)); fi
 out=$($CLI set default_profile 2) >/dev/null
 printf 'com.stale.app\ncom.gone.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.stale.app\npackage:com.gone.app\n' > "$T/disabled.txt"
 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -q 'enable.*com.stale.app' "$T/pm.log" && ! grep -qx 'com.stale.app' "$T/data/state/frozen.txt" 2>/dev/null; then echo "PASS recovery unfreeze"; pass=$((pass+1)); else echo "FAIL recovery unfreeze"; fail=$((fail+1)); fi
 if ! grep -qx 'com.gone.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'package-gone'; then echo "PASS gone-app dropped"; pass=$((pass+1)); else echo "FAIL gone-app dropped"; fail=$((fail+1)); fi
@@ -345,15 +358,32 @@ out=$($CLI remove blacklist com.android.settings) >/dev/null
 # unfreeze resilience: a transient pm-enable failure must KEEP the entry (app
 # still exists) for the next retry, never silently drop it (=> app stuck off).
 printf 'com.flaky.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.flaky.app\n' > "$T/disabled.txt"
 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -qx 'com.flaky.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'kept-for-retry'; then echo "PASS unfreeze fail kept for retry"; pass=$((pass+1)); else echo "FAIL unfreeze fail kept for retry"; fail=$((fail+1)); fi
 : > "$T/data/state/frozen.txt"
 # leftover frozen entries are drained even with NO session lock (belt+braces on
 # top of boot recovery, so an app is never stuck disabled for a whole session)
 printf 'com.evil.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.evil.app\n' > "$T/disabled.txt"
 : > "$T/pm.log"
 out=$($CLI session-end) >/dev/null
 if grep -q 'enable.*com.evil.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS leftover unfreeze no-lock"; pass=$((pass+1)); else echo "FAIL leftover unfreeze no-lock"; fail=$((fail+1)); fi
+# an entry that is NOT in the disabled snapshot was already restored (by the
+# user, or by a run that could not verify it). It must be RETIRED, never
+# re-enabled on every poll — that endless retry storm saturated the package
+# service on-device ("Failed transaction 2147483646") and nothing recovered.
+printf 'com.already.on\n' > "$T/data/state/frozen.txt"
+: > "$T/disabled.txt"; : > "$T/pm.log"
+out=$($CLI session-end) >/dev/null
+if [ ! -s "$T/data/state/frozen.txt" ] && ! grep -q 'enable' "$T/pm.log"; then echo "PASS already-enabled retired"; pass=$((pass+1)); else echo "FAIL already-enabled retired"; fail=$((fail+1)); fi
+# a busy package service must cost ONE probe and defer, not fire a retry storm
+printf 'com.busy.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.busy.app\n' > "$T/disabled.txt"
+: > "$T/pm.log"
+STUB_LIST_FAIL=1 bash "$M/core/recovery.sh" >/dev/null 2>&1
+if grep -qx 'com.busy.app' "$T/data/state/frozen.txt" && ! grep -q 'enable' "$T/pm.log" && $CLI list logs | grep -q 'package-service-busy'; then echo "PASS busy service defers"; pass=$((pass+1)); else echo "FAIL busy service defers"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"
 # CLI stdout must stay VALID JSON: pm chatter is silenced, so the WebUI's
 # JSON.parse never sees "Package X new state: ..." before the reply.
 printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
@@ -434,11 +464,16 @@ out=$(FGC_MODDIR="$T/mod2" bash "$T/mod2/core/fgc-cli.sh" status)
 sed -i 's/"dry_run": [a-z]*,//' "$T/data/config/config.json"
 FGC_MODDIR="$T/mod2" bash "$T/mod2/core/data_init.sh" "$M" >/dev/null
 if grep -q '"dry_run"' "$T/data/config/config.json" && grep -q '"poll_interval_sec": 5' "$T/data/config/config.json"; then echo "PASS key backfill"; pass=$((pass+1)); else echo "FAIL key backfill"; fail=$((fail+1)); fi
-# corrupt rescue: garbage -> valid defaults + .bak
+# corrupt config: data_init must NEVER overwrite it (an earlier release "rescued"
+# it with defaults and silently reset real settings on update). The boot-time
+# normaliser repairs it later — from a backup — since it is the only place where
+# the whole schema is known.
 echo 'CORRUPT{{{' > "$T/data/config/config.json"
+rm -f "$T/data/config/config.json.bak"
 FGC_MODDIR="$T/mod2" bash "$T/mod2/core/data_init.sh" "$M" >/dev/null
-FGC_MODDIR="$T/mod2" bash "$T/mod2/core/fgc-cli.sh" status >/dev/null
-if grep -q '"poll_interval_sec":3' "$T/data/config/config.json" && [ -f "$T/data/config/config.json.bak" ]; then echo "PASS corrupt rescue"; pass=$((pass+1)); else echo "FAIL corrupt rescue"; fail=$((fail+1)); fi
+if [ "$(cat "$T/data/config/config.json")" = 'CORRUPT{{{' ]; then echo "PASS corrupt config kept"; pass=$((pass+1)); else echo "FAIL corrupt config overwritten -- got: $(cat "$T/data/config/config.json")"; fail=$((fail+1)); fi
+FGC_MODDIR="$T/mod2" bash "$T/mod2/core/recovery.sh" >/dev/null 2>&1
+if grep -q '"poll_interval_sec": 3,' "$T/data/config/config.json" && [ -f "$T/data/config/config.json.bak" ]; then echo "PASS corrupt rescue (pretty defaults + .bak)"; pass=$((pass+1)); else echo "FAIL corrupt rescue -- got: $(cat "$T/data/config/config.json")"; fail=$((fail+1)); fi
 out=$($CLI remove games com.test.game); ck "remove game" '"ok":true' "$out"
 # fail-closed: unreadable whitelist aborts cleanup AND freeze (never fail-open)
 mv "$T/data/config/whitelist.txt" "$T/whitelist.hide"
@@ -463,6 +498,29 @@ mv "$T/data/config/whitelist.txt" "$T/wl.hide2"
 out=$($CLI list whitelist)
 if [ -z "$out" ]; then echo "PASS missing list -> empty"; pass=$((pass+1)); else echo "FAIL missing list -- got: [$out]"; fail=$((fail+1)); fi
 mv "$T/wl.hide2" "$T/data/config/whitelist.txt"
+
+# --- file formats: config.json and gamelist.json are stored PRETTY (4-space
+# indent, one key per line) so a user can read or hand-edit them directly.
+# Readers must stay layout-tolerant and every value must survive a reformat.
+GLF="$T/data/config/gamelist.json"
+printf '{"games": []}\n' > "$GLF"
+$CLI add games com.fmt.one Fmt One 2 >/dev/null
+$CLI add games com.fmt.two Fmt Two 0 >/dev/null
+if grep -q '^{"games": \[$' "$GLF" && grep -q '^        "package": "com.fmt.one",$' "$GLF" && grep -q '^    }$' "$GLF" && [ "$(tail -n 1 "$GLF")" = "]}" ]; then
+  echo "PASS gamelist pretty"; pass=$((pass+1))
+else echo "FAIL gamelist pretty -- got: $(cat "$GLF")"; fail=$((fail+1)); fi
+[ "$(tr -d '\n\r' < "$GLF" | grep -o '"package": "com.fmt.two"' | wc -l)" = "1" ] && { echo "PASS gamelist compacted round-trip"; pass=$((pass+1)); } || { echo "FAIL gamelist round-trip"; fail=$((fail+1)); }
+CF="$T/data/config/config.json"
+printf '%s' '{"enabled":true,"detection_mode":"hybrid","poll_interval_sec":5,"default_profile":3,"cleanup_policy":"balanced","logging":true,"dry_run":false,"freeze_system":true,"auto_profile_rules":{"note":"n","game_foreground":2,"idle":1}}' > "$CF"
+. "$M/core/config_manager.sh"
+fgc_cfg_normalize "$CF"; _rc=$?
+if [ "$_rc" = "0" ] && grep -q '^    "poll_interval_sec": 5,$' "$CF" && grep -q '^    "default_profile": 3,$' "$CF" && grep -q '^    "freeze_system": true,$' "$CF" && grep -q '^        "idle": 1$' "$CF" && [ "$(fgc_cfg_get default_profile)" = "3" ] && [ "$(fgc_cfg_get freeze_system)" = "true" ]; then
+  echo "PASS config upgraded to pretty"; pass=$((pass+1))
+else echo "FAIL config upgrade (rc=$_rc) -- got: $(cat "$CF")"; fail=$((fail+1)); fi
+rm -f "$CF.bak"; fgc_cfg_normalize "$CF" >/dev/null
+[ -f "$CF.bak" ] && { echo "FAIL reformat left a backup"; fail=$((fail+1)); } || { echo "PASS reformat is not a repair"; pass=$((pass+1)); }
+$CLI set default_profile 2 >/dev/null
+if grep -q '^    "default_profile": 2,$' "$CF" && [ "$(grep -c '"auto_profile_rules"' "$CF")" = "1" ]; then echo "PASS set keeps pretty"; pass=$((pass+1)); else echo "FAIL set broke layout -- got: $(cat "$CF")"; fail=$((fail+1)); fi
 
 echo "--- $pass pass, $fail fail ---"
 exit $fail

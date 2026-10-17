@@ -23,17 +23,19 @@ if ls "$MODDIR/core" 2>/dev/null | grep -qx 'data_init.sh'; then
     ui_print "! Peringatan: inisialisasi data gagal, memakai default modul"
   fi
 fi
-# Install-time launcher auto-detect (best effort, universal — no hardcoded brands)
+# Install-time launcher probe = REPORTING ONLY. The detected launcher is
+# protected dynamically at boot through state/protected_extra.txt
+# (core/caps.sh -> core/policy_engine.sh), so install never writes to the
+# user's whitelist: a module update must not modify /data/adb/fgc config at all.
 _LAUNCHER=""
 if command -v cmd >/dev/null 2>&1; then
   _LAUNCHER="$(cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | grep -m1 '/' | cut -d/ -f1)"
 fi
 case "$_LAUNCHER" in ''|*[!a-zA-Z0-9._]*) _LAUNCHER="" ;; esac
-if [ -n "$_LAUNCHER" ] && ! grep -qx "$_LAUNCHER" "$FGC_DATA/config/whitelist.txt" 2>/dev/null; then
-  printf '# auto-detected launcher (install-time, this device only)\n%s\n' "$_LAUNCHER" >> "$FGC_DATA/config/whitelist.txt"
-  ui_print "- Launcher terdeteksi: $_LAUNCHER (ditambahkan ke whitelist)"
+if [ -n "$_LAUNCHER" ]; then
+  ui_print "- Launcher: $_LAUNCHER (dilindungi otomatis saat boot; whitelist tidak diubah)"
 else
-  ui_print "- Launcher tidak terdeteksi saat instal; FGC akan mendeteksinya saat boot (recovery)"
+  ui_print "- Launcher belum terdeteksi; FGC mendeteksinya saat boot (recovery)"
 fi
 
 set_perm_recursive "$MODDIR/core" 0 0 0755 0755

@@ -44,6 +44,21 @@ fgc_run_timed() {
   if command -v timeout >/dev/null 2>&1; then timeout "$_t" "$@"
   else "$@"; fi
 }
+# fgc_snap <file> <cmd...> — run cmd, write its stdout to <file>, keep its rc.
+# NEVER redirect a Java tool's stdout straight to a file under /data/adb:
+# pm/dumpsys are app_process wrappers, and the zygote context cannot write
+# there, so `pm list packages -d > $FGC_STATE/x` makes app_process ABORT
+# (SIGABRT) and the snapshot comes out empty/garbage. Every already-disabled
+# check then failed, so FGC re-enabled apps the user had disabled and burned
+# pm calls in a retry loop ("Failed transaction 2147483646"). Capturing in the
+# shell (pipe is fine) and writing the file ourselves keeps output AND status.
+fgc_snap() {
+  _sf="$1"; shift
+  _so="$("$@" 2>/dev/null)"; _src=$?
+  if [ -n "$_so" ]; then printf '%s\n' "$_so" > "$_sf" 2>/dev/null
+  else : > "$_sf" 2>/dev/null; fi
+  return "$_src"
+}
 _fgc_clean() {  _clean=""; _r="$1"
   while [ -n "$_r" ]; do
     _c="${_r%"${_r#?}"}"

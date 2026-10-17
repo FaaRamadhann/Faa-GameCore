@@ -37,7 +37,7 @@ fgc_detect_launcher() {
   _r=""
   if fgc_has_cmd cmd; then
     _cout="$FGC_STATE/.cmdout"
-    if fgc_run_timed 15 cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME > "$_cout" 2>/dev/null; then
+    if fgc_snap "$_cout" fgc_run_timed 15 cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME; then
       while IFS= read -r _cl || [ -n "$_cl" ]; do
         case "$_cl" in */*) _r="${_cl%%/*}"; break ;; esac
       done < "$_cout"
@@ -46,7 +46,7 @@ fgc_detect_launcher() {
   fi
   if [ -z "$_r" ] && fgc_has_cmd dumpsys; then
     _dout="$FGC_STATE/.dout"
-    if fgc_run_timed 15 dumpsys activity activities > "$_dout" 2>/dev/null; then
+    if fgc_snap "$_dout" fgc_run_timed 15 dumpsys activity activities; then
       _rline="$(grep -m1 'mFocusedApp' "$_dout" 2>/dev/null)"
       if [ -n "$_rline" ]; then
         . "${FGC_MODDIR}/core/foreground_monitor.sh"
@@ -82,7 +82,9 @@ fgc_detect_caps() {
   # No early-exit pipes: pm output fully consumed, empty result removes stale data.
   _sys="$FGC_STATE/.syspkgs"
   if fgc_has_cmd pm; then
-    fgc_run_timed 20 pm list packages -s 2>/dev/null | sed 's/^package://' | sort -u > "$_sys.tmp" 2>/dev/null
+    fgc_snap "$_sys.tmp" fgc_run_timed 20 pm list packages -s
+    sed 's/^package://' "$_sys.tmp" 2>/dev/null | sort -u > "$_sys.tmp2" 2>/dev/null
+    mv "$_sys.tmp2" "$_sys.tmp" 2>/dev/null
     if [ -s "$_sys.tmp" ]; then mv "$_sys.tmp" "$_sys"; else rm -f "$_sys.tmp" "$_sys"; fi
   else
     rm -f "$_sys"

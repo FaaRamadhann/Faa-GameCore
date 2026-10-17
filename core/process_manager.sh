@@ -46,7 +46,7 @@ fgc_freeze() {
   # "restore" (enable) something the USER disabled on purpose. Only packages
   # WE transition enabled->disabled are tracked for unfreeze.
   _fdl="$FGC_STATE/.disabled"
-  fgc_run_timed 15 pm list packages -d --user 0 2>/dev/null | sort -u > "$_fdl.tmp" 2>/dev/null
+  fgc_snap "$_fdl.tmp" fgc_run_timed 15 pm list packages -d --user 0
   if [ -s "$_fdl.tmp" ]; then mv "$_fdl.tmp" "$_fdl" 2>/dev/null; else rm -f "$_fdl.tmp" 2>/dev/null; : > "$_fdl" 2>/dev/null; fi
   : > "$_fdl.rc" 2>/dev/null
   for _p in "$@"; do
@@ -82,7 +82,7 @@ fgc_freeze() {
   _live="$FGC_STATE/.disabled_live"
   _canv=0
   if [ -s "$_fdl.rc" ]; then
-    if fgc_run_timed 15 pm list packages -d --user 0 > "$_live" 2>/dev/null; then _canv=1; fi
+    if fgc_snap "$_live" fgc_run_timed 15 pm list packages -d --user 0; then _canv=1; fi
   fi
   if [ -f "$_fdl.rc" ]; then
     # "rc pkg", space separated and read as TWO fields: a package name never
@@ -130,7 +130,7 @@ fgc_pkg_disabled() {
   # `pm list packages -d` is served by the same package service as enable/disable,
   # so a failed probe must never be mistaken for "enabled".
   _f="$FGC_STATE/.disabled_probe"
-  fgc_run_timed 15 pm list packages -d --user 0 > "$_f" 2>/dev/null || { rm -f "$_f"; return 2; }
+  fgc_snap "$_f" fgc_run_timed 15 pm list packages -d --user 0 || { rm -f "$_f"; return 2; }
   if grep -qx "package:$1" "$_f" 2>/dev/null; then rm -f "$_f"; return 0; fi
   rm -f "$_f"; return 1
 }
@@ -143,6 +143,22 @@ fgc_unfreeze_all() {
   _ev="${1:-SESSION_ENDED}"
   _fp="$FGC_STATE/frozen.txt"
   [ -f "$_fp" ] || return 0
+  # ONE disabled-snapshot up front, for two reasons:
+  #  1. An entry that is no longer disabled is ALREADY restored (the user
+  #     enabled it by hand, or an earlier run did but could not verify it).
+  #     Retiring it here is what ends an otherwise endless retry loop.
+  #  2. If the snapshot itself fails, the package service is contended: firing
+  #     enable attempts into it is what kept it saturated. The previous version
+  #     issued 21 pm calls (7 pkgs x 3 tries) on EVERY idle poll (3s), so the
+  #     service answered "Failed transaction (2147483646)" forever and no app
+  #     was ever restored. Now a busy service costs exactly ONE call and the
+  #     entries stay for the next boot/session-end retry.
+  _dis="$FGC_STATE/.disabled_snap"
+  if ! fgc_snap "$_dis" fgc_run_timed 15 pm list packages -d --user 0; then
+    rm -f "$_dis" 2>/dev/null
+    fgc_log "$_ev" "" "unfreeze" "deferred" "package-service-busy"
+    return 0
+  fi
   _keep=""
   _oklist=""
   while IFS= read -r _p || [ -n "$_p" ]; do
@@ -151,6 +167,10 @@ fgc_unfreeze_all() {
     [ "$_kind" = "entry" ] || continue
     _p="$_norm"
     [ -n "$_p" ] || continue
+    if ! grep -qx "package:$_p" "$_dis" 2>/dev/null; then
+      fgc_log "$_ev" "$_p" "unfreeze" "enabled" "already"
+      continue
+    fi
     _done=1; _try=0
     while [ "$_try" -lt 3 ]; do
       # stdout+stderr MUST be silenced: pm/cmd print to STDOUT, which would
@@ -187,7 +207,7 @@ fgc_unfreeze_all() {
   if [ -n "$_oklist" ]; then
     _live="$FGC_STATE/.disabled_live"
     _canv=0
-    if fgc_run_timed 15 pm list packages -d --user 0 > "$_live" 2>/dev/null; then _canv=1; fi
+    if fgc_snap "$_live" fgc_run_timed 15 pm list packages -d --user 0; then _canv=1; fi
     while IFS= read -r _p || [ -n "$_p" ]; do
       [ -n "$_p" ] || continue
       if [ "$_canv" = "1" ] && grep -qx "package:$_p" "$_live" 2>/dev/null; then
@@ -204,6 +224,7 @@ $_oklist
 _FGC_OK
     rm -f "$_live" 2>/dev/null
   fi
+  rm -f "$_dis" 2>/dev/null
   if [ -z "$_keep" ]; then
     : > "$_fp" 2>/dev/null
   else

@@ -11,6 +11,7 @@ CORE_DIR="$MODDIR/core"
 . "$CORE_DIR/policy_engine.sh"
 . "$CORE_DIR/device.sh"
 . "$CORE_DIR/caps.sh"
+. "$CORE_DIR/gamelist.sh"
 
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n\r\t'; }
 
@@ -27,7 +28,7 @@ _glist_ensure() {
     _i=$((_i+1)); sleep 1
   done
   cp "$_gf" "$_gf.bak" 2>/dev/null
-  printf '{"games":[]}' > "$_gf" 2>/dev/null || return 1
+  printf '{"games": []}\n' > "$_gf" 2>/dev/null || return 1
   fgc_log "CORE_ERROR" "" "gamelist" "rescued" "missing-or-corrupt"
   return 0
 }
@@ -59,6 +60,9 @@ _list_append() {
 # devices while open()+exec keep working; readability is probed open-based
 # and the exec itself IS the final check.
 FGC_DEX="$MODDIR/bin/fgc-pm.dex"
+# Icon renderer generation. Bumping it retires every cached bitmap exactly once
+# (key "<appver>|g<GEN>"), e.g. after changing how icons are trimmed/scaled.
+FGC_ICON_GEN=3
 fgc_java() {
   command -v app_process >/dev/null 2>&1 || return 1
   cat "$FGC_DEX" >/dev/null 2>&1 || return 1
@@ -119,18 +123,26 @@ cmd_list() { # list [games|blacklist|whitelist|logs|packages] (bare = games)
     whitelist) fgc_each_all "$FGC_CONFIG/whitelist.txt" ;;
     logs) tail -n 100 "$FGC_LOGS/session.log" 2>/dev/null || true ;;
     packages)
-      # list packages [all|user|system] -> pkg<TAB>label<TAB>user|system (real pm data)
+      # list packages [all|user|system] -> pkg<TAB>label<TAB>user|system<TAB>ver
+      # (real pm/Java data; the 4th column is the app's versionCode).
       _which="${2:-all}"
+      # A missing state dir must not silently degrade to the slow pm+dumpsys
+      # path (its temp files live here too).
+      mkdir -p "$FGC_STATE" 2>/dev/null
       # fast path: Java PackageManager helper (single shot, correct labels)
       _jl="$FGC_STATE/.javapkgs"
       _tab="$(printf '\t')"
-      if fgc_java list > "$_jl" 2>/dev/null; then
+      if fgc_snap "$_jl" fgc_java list; then
         _head="$(head -n 1 "$_jl" 2>/dev/null)"
         case "$_head" in *"$_tab"*)
           if [ "$_which" = "all" ]; then cat "$_jl"
           else
-            while IFS= read -r _pl || [ -n "$_pl" ]; do
-              case "$_pl" in *"$_tab$_which") printf '%s\n' "$_pl" ;; esac
+            # Field-precise: split on tabs and compare ONLY the type column, so
+            # a trailing column (versionCode) can never break -- or fake -- a
+            # filter. Never match the whole line (labels may contain "user").
+            while IFS="$_tab" read -r _pp _pl _pt _pv || [ -n "$_pp" ]; do
+              [ "$_pt" = "$_which" ] || continue
+              printf '%s\t%s\t%s\t%s\n' "$_pp" "$_pl" "$_pt" "$_pv"
             done < "$_jl"
           fi
           rm -f "$_jl"
@@ -139,18 +151,23 @@ cmd_list() { # list [games|blacklist|whitelist|logs|packages] (bare = games)
       fi
       rm -f "$_jl"
       _sysf="$FGC_STATE/.syspkgs"
-      pm list packages -s 2>/dev/null | sed 's/^package://' | sort -u > "$_sysf" 2>/dev/null
+      # fgc_snap, not a redirect: app_process cannot write to /data/adb (see str.sh)
+      fgc_snap "$_sysf" pm list packages -s
+      sed 's/^package://' "$_sysf" 2>/dev/null | sort -u > "$_sysf.n" 2>/dev/null
+      mv "$_sysf.n" "$_sysf" 2>/dev/null
       pm list packages 2>/dev/null | sed 's/^package://' | sort -u | while IFS= read -r p; do
         [ -n "$p" ] || continue
         if grep -qx "$p" "$_sysf" 2>/dev/null; then _t=system; else _t=user; fi
         case "$_which" in all) ;; "$_t") ;; *) continue ;; esac
-        _l=""
-        if dumpsys package "$p" > "$FGC_STATE/.pkgout" 2>/dev/null; then
+        _l=""; _vc=""
+        if fgc_snap "$FGC_STATE/.pkgout" dumpsys package "$p"; then
           _l="$(_fgc_pick_label "$FGC_STATE/.pkgout" 2>/dev/null)" || _l=""
+          # best effort (POSIX BRE only): versionCode feeds the icon cache key
+          _vc="$(sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' "$FGC_STATE/.pkgout" 2>/dev/null | head -n 1)"
         fi
         rm -f "$FGC_STATE/.pkgout"
         [ -z "$_l" ] && _l="$p"
-        printf '%s\t%s\t%s\n' "$p" "$_l" "$_t"
+        printf '%s\t%s\t%s\t%s\n' "$p" "$_l" "$_t" "$_vc"
       done
       rm -f "$_sysf"
       ;;
@@ -158,8 +175,8 @@ cmd_list() { # list [games|blacklist|whitelist|logs|packages] (bare = games)
   esac
 }
 
-valid_pkg() { # exact package chars only
-  case "$1" in ''|*[!a-zA-Z0-9._]*) return 1 ;; *) return 0 ;; esac
+valid_pkg() { # exact package chars only (fgc_pkg_ok: shared with core/gamelist.sh)
+  fgc_pkg_ok "$1"
 }
 
 cmd_add() { # add <games|blacklist|whitelist> <package> [label...] [profile]
@@ -181,43 +198,26 @@ cmd_add() { # add <games|blacklist|whitelist> <package> [label...] [profile]
   case "$_t" in
     games)
       _glist_ensure || { echo '{"error":"add-failed"}'; return 1; }
-      grep -q "\"$_p\"" "$FGC_CONFIG/gamelist.json" 2>/dev/null && { echo '{"error":"duplicate"}'; return 1; }
+      _gf="$FGC_CONFIG/gamelist.json"; _dump="$_gf.list"; _tab="$(printf '\t')"
+      fgc_glist_dump "$_gf" > "$_dump" 2>/dev/null || { rm -f "$_dump" 2>/dev/null; echo '{"error":"add-failed"}'; return 1; }
+      _dupe=0
+      while IFS="$_tab" read -r _gp _gl _gpf; do
+        [ "$_gp" = "$_p" ] && _dupe=1
+      done < "$_dump"
+      if [ "$_dupe" = "1" ]; then
+        rm -f "$_dump" 2>/dev/null; echo '{"error":"duplicate"}'; return 1
+      fi
+      # jesc: the label travels as JSON-escaped text, exactly what the file stores
       _l="$(jesc "$_label")"
-      _gf="$FGC_CONFIG/gamelist.json"; _tmp="$_gf.tmp"
-      _ok=0
-      if python3 - "$_gf" "$_tmp" "$_p" "$_l" "$_prof" 2>/dev/null <<'EOF'
-import json,sys
-f,t,pkg,label,prof=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5]
-try: d=json.load(open(f))
-except: d={"games":[]}
-d.setdefault("games",[]).append({"package":pkg,"label":label,"profile":int(prof or 0)})
-json.dump(d,open(t,"w"),indent=1)
-EOF
-      then
-        grep -q "\"$_p\"" "$_tmp" 2>/dev/null && _ok=1
-      fi
-      if [ "$_ok" = "0" ]; then
-        # fallback without python (on-device: python3 never exists, THIS is the
-        # real path): append into the games array, empty or not. Normalized to
-        # single-line first so pretty-printed files work too.
-        _esc="$(printf '%s' "$_l" | sed 's/[\/&|\\]/\\&/g')"
-        _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
-        _new='{"package": "'$_p'", "label": "'$_esc'", "profile": '${_prof:-0}'}'
-        if printf '%s' "$_one" | grep -q '"games"[ ]*:[ ]*\[[ ]*\]'; then
-          printf '%s' "$_one" | sed "s/\"games\"[ ]*:[ ]*\[[ ]*\]/\"games\": [$_new]/" > "$_tmp" 2>/dev/null \
-            && grep -q "\"$_p\"" "$_tmp" 2>/dev/null && _ok=1
-        elif printf '%s' "$_one" | grep -q '"games"'; then
-          printf '%s' "$_one" | sed "s/\(.*\)\]}[[:space:]]*\$/\1, $_new]}/" > "$_tmp" 2>/dev/null \
-            && grep -q "\"$_p\"" "$_tmp" 2>/dev/null && _ok=1
-        fi
-      fi
-      if [ "$_ok" = "1" ]; then
-        mv "$_tmp" "$_gf" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null; echo '{"error":"add-failed"}'; return 1; }
+      printf '%s\t%s\t%s\n' "$_p" "$_l" "${_prof:-0}" >> "$_dump" 2>/dev/null \
+        || { rm -f "$_dump" 2>/dev/null; echo '{"error":"add-failed"}'; return 1; }
+      if fgc_glist_write "$_gf" < "$_dump"; then
+        rm -f "$_dump" 2>/dev/null
+        fgc_log "SESSION_STARTED" "$_p" "gamelist-add" "added" ""
+        echo '{"ok":true}'
       else
-        rm -f "$_tmp" 2>/dev/null; echo '{"error":"add-failed"}'; return 1
-      fi
-      fgc_log "SESSION_STARTED" "$_p" "gamelist-add" "added" ""
-      echo '{"ok":true}' ;;
+        rm -f "$_dump" 2>/dev/null; echo '{"error":"add-failed"}'; return 1
+      fi ;;
     blacklist|whitelist)
       _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
       grep -qx "$_p" "$_f" 2>/dev/null && { echo '{"error":"duplicate"}'; return 1; }
@@ -235,34 +235,19 @@ cmd_remove() { # remove <games|blacklist|whitelist> <package>
   case "$_t" in
     games)
       _glist_ensure || { echo '{"error":"remove-failed"}'; return 1; }
-      _gf="$FGC_CONFIG/gamelist.json"; _gtmp="$_gf.tmp"
-      _ok=0
-      if python3 - "$_gf" "$_gtmp" "$_p" 2>/dev/null <<'EOF'
-import json,sys
-f,t,pkg=sys.argv[1],sys.argv[2],sys.argv[3]
-d=json.load(open(f)); d["games"]=[g for g in d.get("games",[]) if g.get("package")!=pkg]
-json.dump(d,open(t,"w"),indent=1)
-EOF
-      then
-        grep -q '"games"' "$_gtmp" 2>/dev/null && _ok=1
-      fi
-      if [ "$_ok" = "0" ]; then
-        # fallback without python: exact-object surgery (line-based delete
-        # would nuke the whole file when JSON is single-line). Normalized
-        # first; two expressions instead of one \{0,1\} interval (toybox sed
-        # lacks intervals): first strips a mid-list object incl. its comma,
-        # second strips a last/only object; then collapse a leftover ", ]".
-        _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
-        _re="$(printf '%s' "$_p" | sed 's/\./\\./g')"
-        printf '%s' "$_one" | sed -e "s/{\"package\": \"$_re\"[^}]*\}, *//" -e "s/{\"package\": \"$_re\"[^}]*\}//" -e "s/, *\]/]/" > "$_gtmp" 2>/dev/null \
-          && grep -q '"games"' "$_gtmp" 2>/dev/null && _ok=1
-      fi
-      if [ "$_ok" = "1" ]; then
-        mv "$_gtmp" "$_gf" 2>/dev/null || { rm -f "$_gtmp" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1; }
+      _gf="$FGC_CONFIG/gamelist.json"; _dump="$_gf.list"; _tab="$(printf '\t')"
+      fgc_glist_dump "$_gf" > "$_dump" 2>/dev/null || { rm -f "$_dump" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1; }
+      # Rebuild WITHOUT the target (exact package compare, never a regex on a
+      # label) and re-emit the pretty document.
+      while IFS="$_tab" read -r _gp _gl _gpf; do
+        [ "$_gp" = "$_p" ] && continue
+        printf '%s\t%s\t%s\n' "$_gp" "$_gl" "$_gpf"
+      done < "$_dump" > "$_dump.2"
+      if fgc_glist_write "$_gf" < "$_dump.2"; then
+        rm -f "$_dump" "$_dump.2" 2>/dev/null; echo '{"ok":true}'
       else
-        rm -f "$_gtmp" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1
-      fi
-      echo '{"ok":true}' ;;
+        rm -f "$_dump" "$_dump.2" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1
+      fi ;;
     blacklist|whitelist)
       _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
       _list_filter "$_f" "$_p" && echo '{"ok":true}' || echo '{"error":"remove-failed"}' ;;
@@ -289,34 +274,21 @@ cmd_set() { # set <key> <value> | set profile <1..4> [package]
     if [ -n "$_pkg" ]; then
       valid_pkg "$_pkg" || { echo '{"error":"invalid package"}'; return 1; }
       _glist_ensure || { echo '{"error":"set-failed"}'; return 1; }
-      grep -q "\"package\"[ ]*:[ ]*\"$_pkg\"" "$FGC_CONFIG/gamelist.json" 2>/dev/null \
-        || { echo '{"error":"not-a-game"}'; return 1; }
-      _gf="$FGC_CONFIG/gamelist.json"; _gtmp="$_gf.tmp"
-      _ok=0
-      if python3 - "$_gf" "$_gtmp" "$_pkg" "$_pv" 2>/dev/null <<'EOF'
-import json,sys
-f,t,pkg,pv=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
-d=json.load(open(f))
-for g in d.get("games",[]):
-  if g.get("package")==pkg: g["profile"]=pv
-json.dump(d,open(t,"w"),indent=1)
-EOF
-      then
-        grep -q "\"package\": \"$_pkg\"[^}]*\"profile\": $_pv" "$_gtmp" 2>/dev/null && _ok=1
+      _gf="$FGC_CONFIG/gamelist.json"; _dump="$_gf.list"; _tab="$(printf '\t')"
+      fgc_glist_dump "$_gf" > "$_dump" 2>/dev/null || { rm -f "$_dump" 2>/dev/null; echo '{"error":"set-failed"}'; return 1; }
+      _found=0
+      while IFS="$_tab" read -r _gp _gl _gpf; do
+        if [ "$_gp" = "$_pkg" ]; then _gpf="$_pv"; _found=1; fi
+        printf '%s\t%s\t%s\n' "$_gp" "$_gl" "$_gpf"
+      done < "$_dump" > "$_dump.2" 2>/dev/null
+      if [ "$_found" != "1" ]; then
+        rm -f "$_dump" "$_dump.2" 2>/dev/null
+        echo '{"error":"not-a-game"}'; return 1
       fi
-      if [ "$_ok" = "0" ]; then
-        # fallback without python: rewrite ONLY the profile digits inside the
-        # target object (label untouched). Normalized single-line first.
-        _re="$(printf '%s' "$_pkg" | sed 's/\./\\./g')"
-        _one="$(tr -d '\n\r' < "$_gf" 2>/dev/null)"
-        printf '%s' "$_one" | sed "s/\({\"package\": \"$_re\"[^}]*\"profile\": \)[0-9][0-9]*/\1$_pv/" > "$_gtmp" 2>/dev/null \
-          && grep -q "\"package\": \"$_re\"[^}]*\"profile\": $_pv" "$_gtmp" 2>/dev/null && _ok=1
-      fi
-      if [ "$_ok" = "1" ]; then
-        mv "$_gtmp" "$_gf" 2>/dev/null || { rm -f "$_gtmp" 2>/dev/null; echo '{"error":"set-failed"}'; return 1; }
-        echo '{"ok":true}'
+      if fgc_glist_write "$_gf" < "$_dump.2"; then
+        rm -f "$_dump" "$_dump.2" 2>/dev/null; echo '{"ok":true}'
       else
-        rm -f "$_gtmp" 2>/dev/null; echo '{"error":"set-failed"}'; return 1
+        rm -f "$_dump" "$_dump.2" 2>/dev/null; echo '{"error":"set-failed"}'; return 1
       fi
     else
       fgc_cfg_set default_profile "$_pv" && echo '{"ok":true}' || echo '{"error":"set-failed"}'
@@ -353,7 +325,7 @@ cmd_icon() {
   # even when no version is passed.
   valid_pkg "$1" || { echo '{"error":"invalid package"}'; return 1; }
   _cdir="$FGC_STATE/icons"
-  _gen=3
+  _gen="$FGC_ICON_GEN"
   mkdir -p "$_cdir" 2>/dev/null
   _cf="$_cdir/$1.b64"; _vf="$_cdir/$1.ver"
   # Cache key = "<appver>|g<GEN>". An empty appver is fine: the key becomes
@@ -377,26 +349,54 @@ cmd_icon() {
 }
 
 cmd_icons() {
-  # icons [pkg...] -> cached icons only, one per line: pkg<TAB>base64.
-  # No args = dump whole cache. Uncached packages are SKIPPED here (fetch
-  # them individually via `icon`, which generates + caches). Single exec
-  # serves the common case instead of one blocking round-trip per row.
+  # icons [pkg[=ver]...] -> pkg<TAB>base64 per line.
+  #  - no args: dump the WHOLE disk cache (no generation, one cheap exec).
+  #  - with args: return the cached icons for those packages and RENDER the
+  #    missing ones in a single helper exec. JVM startup dominates icon cost,
+  #    so one exec per row left long lists sitting on their letter avatar for
+  #    a minute or more (looked like "icons randomly fall back to letters").
+  #  - `pkg=ver` uses the same cache key as `icon <pkg> <ver>`, so both paths
+  #    share one cache and an app update retires exactly one bitmap.
   _cdir="$FGC_STATE/icons"
-  [ -d "$_cdir" ] || return 0
-  if [ $# -eq 0 ]; then
+  mkdir -p "$_cdir" 2>/dev/null
+  [ $# -gt 0 ] || {
     for _cf in "$_cdir"/*.b64; do
       [ -f "$_cf" ] || continue
       _bn="${_cf##*/}"; _bp="${_bn%.b64}"
       valid_pkg "$_bp" || continue
       printf '%s\t%s\n' "$_bp" "$(cat "$_cf" 2>/dev/null)"
     done
-  else
-    for _p in "$@"; do
-      valid_pkg "$_p" || continue
-      [ -s "$_cdir/$_p.b64" ] || continue
+    return 0
+  }
+  _miss=""; _jargs=""
+  for _arg in "$@"; do
+    _p="${_arg%%=*}"; _v=""
+    case "$_arg" in *=*) _v="${_arg#*=}" ;; esac
+    case "$_v" in ''|*[!a-zA-Z0-9._]*) _v="" ;; esac
+    valid_pkg "$_p" || continue
+    if [ -s "$_cdir/$_p.b64" ] && [ "$(cat "$_cdir/$_p.ver" 2>/dev/null)" = "$_v|g$FGC_ICON_GEN" ]; then
       printf '%s\t%s\n' "$_p" "$(cat "$_cdir/$_p.b64" 2>/dev/null)"
+    else
+      _miss="$_miss $_p=$_v"; _jargs="$_jargs $_p"
+    fi
+  done
+  [ -n "$_jargs" ] || return 0
+  _verof() {
+    for _t in $_miss; do
+      case "$_t" in "$1="*) printf '%s' "${_t#*=}"; return 0 ;; "$1") return 0 ;; esac
     done
-  fi
+    return 0
+  }
+  _tab="$(printf '\t')"
+  fgc_java icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb; do
+    [ -n "$_gp" ] && [ -n "$_gb" ] || continue
+    case "$_gb" in *[!a-zA-Z0-9+/=]*) continue ;; esac
+    valid_pkg "$_gp" || continue
+    _gv="$(_verof "$_gp")"
+    printf '%s' "$_gb" > "$_cdir/$_gp.b64" 2>/dev/null
+    printf '%s' "$_gv|g$FGC_ICON_GEN" > "$_cdir/$_gp.ver" 2>/dev/null
+    printf '%s\t%s\n' "$_gp" "$_gb"
+  done
 }
 
 cmd_clearlog() {

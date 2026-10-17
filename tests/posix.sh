@@ -79,5 +79,26 @@ n1=$(md5sum "$T/data/config/config.json" | cut -d' ' -f1)
 bash "$M/core/data_init.sh" >/dev/null 2>&1
 n2=$(md5sum "$T/data/config/config.json" | cut -d' ' -f1)
 [ "$n1" = "$n2" ] && { echo "PASS strict migrate-idempotent"; pass=$((pass+1)); } || { echo "FAIL strict migrate changed file"; fail=$((fail+1)); }
+# shipped defaults are already in the PRETTY layout, and the canonical writer in
+# core/config_manager.sh reproduces them byte for byte (strict grep active: the
+# whole format layer must stay POSIX-clean).
+grep -q '^{"games": \[\]}$' "$M/config/gamelist.json" && { echo "PASS shipped gamelist empty form"; pass=$((pass+1)); } || { echo "FAIL shipped gamelist empty form"; fail=$((fail+1)); }
+if [ "$(cat "$M/config/config.json")" = "$(. "$M/core/config_manager.sh" 2>/dev/null; fgc_cfg_pretty)" ]; then echo "PASS shipped config is canonical"; pass=$((pass+1)); else echo "FAIL shipped config not canonical"; fail=$((fail+1)); fi
+# gamelist write -> read round-trip (pretty on disk, values intact)
+. "$M/core/gamelist.sh"
+GL="$T/data/config/gamelist.json"
+printf 'com.miui.aa\tAlpha, One\t3\ncom.miui.bb\tBeta\t0\n' | fgc_glist_write "$GL"
+if grep -q '^        "package": "com.miui.aa",$' "$GL" && grep -q '^        "label": "Alpha, One",$' "$GL" \
+   && [ "$(fgc_glist_profile "$GL" com.miui.aa)" = "3" ] \
+   && [ "$(fgc_glist_dump "$GL" | grep -c "^com.miui.bb$(printf '\t')")" = "1" ]; then
+  echo "PASS strict gamelist pretty round-trip"; pass=$((pass+1))
+else echo "FAIL strict gamelist round-trip -- got: $(cat "$GL")"; fail=$((fail+1)); fi
+# app_process-backed tools (pm/dumpsys/cmd) MUST NOT write straight to a file:
+# the zygote context cannot write under /data/adb, so a bare redirect makes the
+# tool ABORT and every snapshot reads empty (on-device: all "already disabled"
+# checks failed, FGC re-enabled user-disabled apps and spun a pm retry loop).
+# Capture in the shell instead (fgc_snap / $(...)). Static check, no device.
+_bad=$(grep -nE '\b(pm|dumpsys|cmd) [^|;>]*> *"?\$' "$M"/core/*.sh 2>/dev/null | grep -v ':[0-9]*: *#')
+[ -z "$_bad" ] && { echo "PASS no app_process redirect-to-file"; pass=$((pass+1)); } || { echo "FAIL app_process redirect -- $_bad"; fail=$((fail+1)); }
 echo "--- $pass pass, $fail fail ---"
 exit $fail

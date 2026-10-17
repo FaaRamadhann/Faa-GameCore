@@ -104,7 +104,7 @@
     try { if (ksu && typeof ksu.toast === "function") ksu.toast(msg); } catch (e) {}
   }
 
-  var ALLOW = { status: 1, list: 1, add: 1, remove: 1, toggle: 1, set: 1, diag: 1, "session-start": 1, "session-end": 1, icon: 1, icons: 1 };
+  var ALLOW = { status: 1, list: 1, add: 1, remove: 1, toggle: 1, set: 1, diag: 1, "session-start": 1, "session-end": 1, icon: 1, icons: 1, clearlog: 1 };
 
   function DeviceBackend(bridge, moddir, bridgeInfo) {
     this.mode = "device";
@@ -158,7 +158,8 @@
   function parseTyped(t) {
     return String(t).split("\n").map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
       var p = l.split("\t");
-      return { pkg: p[0], label: p[1] || p[0], type: p[2] || "unknown" };
+      // 4th column = versionCode (icon cache key so an app update re-renders).
+      return { pkg: p[0], label: p[1] || p[0], type: p[2] || "unknown", version: p[3] || "" };
     });
   }
   DeviceBackend.prototype.packages = function () {
@@ -170,7 +171,7 @@
       try {
         var users = JSON.parse(k.listPackages("user") || "[]");
         var systems = JSON.parse(k.listPackages("system") || "[]");
-        var sysmap = {}, seen = {}, all = [];
+        var sysmap = {}, seen = {}, all = [], vers = {};
         systems.forEach(function (p) { sysmap[p] = 1; if (!seen[p]) { seen[p] = 1; all.push(p); } });
         users.forEach(function (p) { if (!seen[p]) { seen[p] = 1; all.push(p); } });
         var labels = {}, infoList = [];
@@ -192,7 +193,7 @@
           var out = all.map(function (p) {
             var a = { pkg: p, label: labels[p] || p,
               type: sysmap[p] ? "system" : "user",
-              isGame: false, version: "" };
+              isGame: false, version: vers[p] || "" };
             byPkg[p] = a;
             return a;
           });
@@ -216,7 +217,9 @@
         }
         return viaCli().then(function (cli) {
           cli.forEach(function (a) {
-            if (a && a.pkg && !labels[a.pkg] && a.label && a.label !== a.pkg) labels[a.pkg] = a.label;
+            if (!a || !a.pkg) return;
+            if (!labels[a.pkg] && a.label && a.label !== a.pkg) labels[a.pkg] = a.label;
+            if (a.version) vers[a.pkg] = String(a.version);
           });
           return build();
         }, function () { return build(); });
@@ -276,7 +279,8 @@
     if (pkgs && pkgs.length) {
       var ok = [];
       for (var i = 0; i < pkgs.length && i < 500; i++) {
-        if (/^[A-Za-z0-9._]+$/.test(String(pkgs[i]))) ok.push(pkgs[i]);
+        // pkg or pkg=ver (versionCode): same cache key as icon <pkg> <ver>.
+        if (/^[A-Za-z0-9._]+(=[A-Za-z0-9._]*)?$/.test(String(pkgs[i]))) ok.push(pkgs[i]);
       }
       if (ok.length) arg = " " + ok.join(" ");
     }
@@ -312,7 +316,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.5",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.6",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

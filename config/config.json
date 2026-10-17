@@ -1,1 +1,15 @@
-{"enabled":true,"detection_mode":"hybrid","poll_interval_sec":3,"default_profile":1,"cleanup_policy":"balanced","logging":true,"dry_run":false,"freeze_system":false,"auto_profile_rules":{"note":"Auto picks Performance when a listed game is foreground, else Balance. No AI claims.","game_foreground":2,"idle":1}}
+{
+    "enabled": true,
+    "detection_mode": "hybrid",
+    "poll_interval_sec": 3,
+    "default_profile": 1,
+    "cleanup_policy": "balanced",
+    "logging": true,
+    "dry_run": false,
+    "freeze_system": false,
+    "auto_profile_rules": {
+        "note": "Auto picks Performance when a listed game is foreground, else Balance. No AI claims.",
+        "game_foreground": 2,
+        "idle": 1
+    }
+}

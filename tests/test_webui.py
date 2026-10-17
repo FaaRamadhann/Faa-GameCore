@@ -29,6 +29,12 @@ check("localStorage" in be, "preview persistence")
 check("preview" in be.lower(), "honest preview mode")
 check("kernelsu" in be.lower() and "magisk" in be.lower(), "device bridge probing")
 check("allow" in be.lower() or "ALLOW" in be, "command allowlist")
+# Every CLI call the adapter makes must be in the allowlist. A missing entry is
+# not a security failure but a silent dead button (v1.2.5: "clear log" did
+# nothing because `clearlog` was never added to ALLOW).
+_allow = set(re.findall(r'"?([A-Za-z-]+)"?:\s*1', re.search(r"var ALLOW = \{(.*?)\};", be, re.S).group(1)))
+_called = set(re.findall(r'_run\("([a-z-]+)', be))
+check(_called <= _allow, "allowlist covers adapter calls" + ("" if _called <= _allow else " missing " + ",".join(sorted(_called - _allow))))
 check("eval(" not in app and "eval(" not in be, "no eval in webui")
 # core checks
 cli = (ROOT/"core/fgc-cli.sh").read_text(encoding="utf-8")
@@ -125,7 +131,7 @@ check(not _gnu_bad, "posix grep/sed only" + ("" if not _gnu_bad else ": " + ",".
 check("protected_extra" in pe, "dynamic launcher protection")
 check("FGC_PROTECTED_BASE" in pe and "miui" not in pe.lower(), "universal protected base")
 # v1.2.4: config-faithful list rendering, honest pm toggling, read-only SELinux report
-check("if (r.member) return matchTerm(r, term)" in app, "lists render config members by default (search reveals candidates)")
+check("if (r.member) return matchTerm(r, term)" in app and "Installed non-members are listed too" in app, "list pages render installed apps too (never members-only)")
 check("Cari / tambah" in idx, "search-to-add hint")
 _caps_src = (ROOT/"core/caps.sh").read_text(encoding="utf-8")
 check("fgc_selinux_mode" in _caps_src and "getenforce" in _caps_src, "selinux mode detected (read-only)")
@@ -165,5 +171,23 @@ check("cmd_clearlog" in _cl and "clearlog" in _cl, "clear-log CLI command")
 check("DeviceBackend.prototype.clearLog" in be, "clear-log adapter method")
 check("LocalBackend.prototype.clearLog" in be, "clear-log preview parity")
 check("btnClearLog" in idx and "btnClearLog" in app and "backend.clearLog" in app, "clear-log UI wired")
+# v1.2.6: readable file formats (pretty config.json + gamelist.json), icon batch,
+# plus the three field reports: "lists show no apps", "icons show letters
+# sometimes", "updating reset my config".
+gl = (ROOT/"core/gamelist.sh").read_text(encoding="utf-8")
+check("fgc_glist_pretty" in gl and "fgc_glist_dump" in gl and "fgc_glist_write" in gl and "fgc_glist_profile" in gl, "gamelist format has one home")
+check("fgc_glist_write" in _cl and "python3" not in _cl, "gamelist writes are pure shell (no python on device)")
+check("fgc_pkg_ok" in gl and "fgc_pkg_ok" in _cl, "package validation shared, not duplicated")
+_cm = (ROOT/"core/config_manager.sh").read_text(encoding="utf-8")
+check("fgc_cfg_pretty" in _cm and "fgc_cfg_normalize" in _cm, "config pretty writer + data-preserving normaliser")
+check("fgc_cfg_normalize" in (ROOT/"core/recovery.sh").read_text(encoding="utf-8"), "config normalised to pretty at boot")
+check("kept-as-is" in (ROOT/"core/data_init.sh").read_text(encoding="utf-8"), "migrate never overwrites user config")
+_cf_txt = (ROOT/"config/config.json").read_text(encoding="utf-8")
+check('{\n    "enabled": ' in _cf_txt and '"auto_profile_rules": {\n' in _cf_txt, "shipped config.json is pretty (4-space)")
+check((ROOT/"config/gamelist.json").read_text(encoding="utf-8") == '{"games": []}\n', "shipped gamelist.json empty form")
+check("version: p[3] || \"\"" in be, "list packages parses the versionCode column")
+check("ICON_BATCH" in app and "backend.icons(tokens)" in app and "requeueLater" in app, "icons resolved one exec per chunk (not per row)")
+check("pkg[=ver]" in _cl and "(=[A-Za-z0-9._]*)?" in be, "pkg=ver tokens reach the batch helper")
+check("backend.icon(target, (state.pkgVers" in app and "state.pkgVers[p]" in app, "icon requests are version aware")
 print("universal: %d failed" % len([m for m in fails if 'brand' in m or 'chip' in m or 'fallback' in m or 'caps' in m or 'protect' in m]))
 sys.exit(1 if fails else 0)

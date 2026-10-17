@@ -34,31 +34,32 @@ _dmissing() {
 
 fgc_migrate_keys() {
   # $1 = config.json — backfill keys added by newer releases (missing only).
-  # Retried: a single failed read must never trigger a rescue-reseed.
-  # Returns 1 when keys are STILL missing afterwards (corrupt file) so the
-  # caller can rescue instead of silently keeping garbage.
+  # NEVER overwrites, reseeds or "rescues" user data: a config that cannot be
+  # parsed is left EXACTLY as-is (a missing key simply falls back to its default
+  # at read time) and the shortfall is logged. Returns 0 only when every key is
+  # present afterwards.
+  #
+  # Key detection is deliberately primitive: ONE plain `grep -q` per key, no
+  # pipeline. An earlier version used `grep -o -e ... | sort -u` matched with a
+  # case pattern; inside the Magisk installer environment that pipeline produced
+  # nothing, so every key looked missing, ~27 duplicate keys were injected, and
+  # the file was then "rescued" — silently resetting the user's Awaken profile
+  # and freeze_system to defaults on update. Keep this dependency-free.
   _mf="$1"
+  [ -n "$_mf" ] || return 1
   _try=0
   while [ "$_try" -lt 3 ]; do
     if [ -f "$_mf" ]; then
-      _alt() {
-        # One key per line (POSIX grep -o with -e list; NO \| alternation:
-        # toybox grep lacks it and fails SILENTLY, which once caused endless
-        # duplicate-key appends + false corrupt-rescues on-device).
-        grep -o -e '"enabled"' -e '"detection_mode"' -e '"poll_interval_sec"' \
-          -e '"default_profile"' -e '"cleanup_policy"' -e '"logging"' \
-          -e '"dry_run"' -e '"freeze_system"' -e '"auto_profile_rules"' "$_mf" 2>/dev/null | sort -u
-      }
       _all_present() {
-        _have="$(_alt)"
         for _k in enabled detection_mode poll_interval_sec default_profile cleanup_policy logging dry_run freeze_system auto_profile_rules; do
-          case "$_have" in *"\"$_k\""*) ;; *) return 1 ;; esac
+          grep -q "\"$_k\"" "$_mf" 2>/dev/null || return 1
         done
         return 0
       }
       _all_present && return 0
       _add_key() {
-        # $1=key $2=default-json
+        # $1=key $2=default-json — appended before the final brace, written to a
+        # temp file and renamed (atomic; the original is never truncated).
         _esc="$(printf '%s' "$2" | sed 's/[&\\]/\\&/g')"
         _one="$(tr -d '\n\r' < "$_mf" 2>/dev/null)"
         printf '%s' "$_one" | sed "s/[[:space:]]*}[[:space:]]*\$/,\"$1\": $_esc}/" > "$_mf.tmp" 2>/dev/null || return 1
@@ -100,16 +101,15 @@ fgc_data_init() {
   if _dmissing "$FGC_DATA/logs/session.log" && [ -n "$_old" ] && [ "$_old" != "$_new" ] && _mfile "$_old/logs/session.log"; then
     cp "$_old/logs/session.log" "$FGC_DATA/logs/session.log" 2>/dev/null || true
   fi
-  # 2. schema: backfill keys added by newer releases; rescue corrupt files
+  # 2. schema: backfill keys added by newer releases. A shortfall is REPORTED,
+  # never "fixed" by overwriting: user settings always outrank a missing key
+  # (reads fall back per key). This block used to reseed shipped defaults when
+  # migration reported a shortfall, which silently wiped real settings on
+  # update — it must stay non-destructive.
   if [ -f "$FGC_DATA/config/config.json" ]; then
-    fgc_migrate_keys "$FGC_DATA/config/config.json" \
-    || {
-      cp "$FGC_DATA/config/config.json" "$FGC_DATA/config/config.json.bak" 2>/dev/null
-      # embedded defaults (= shipped config/config.json): never sourced from
-      # any live dir, so a half-written tree cannot poison the reseed.
-      printf '%s' '{"enabled":true,"detection_mode":"hybrid","poll_interval_sec":3,"default_profile":1,"cleanup_policy":"balanced","logging":true,"dry_run":false,"freeze_system":false,"auto_profile_rules":{"note":"Auto picks Performance when a listed game is foreground, else Balance. No AI claims.","game_foreground":2,"idle":1}}' \
-        > "$FGC_DATA/config/config.json" 2>/dev/null || true
-    }
+    if ! fgc_migrate_keys "$FGC_DATA/config/config.json"; then
+      command -v fgc_log >/dev/null 2>&1 && fgc_log "CORE_ERROR" "" "config" "schema-incomplete" "kept-as-is"
+    fi
   fi
   printf '%s' "$FGC_SCHEMA" > "$FGC_DATA/.schema" 2>/dev/null
   # 3. module dirs stay PLAIN shipped defaults (never symlinked, never

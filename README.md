@@ -44,13 +44,14 @@ Device bridge dideteksi berurutan (yang pertama tersedia dipakai):
 - Tab **User App | System App** di Gamelist, Whitelist, dan Blacklist memakai
   tipe real (`pm -s` / `listPackages`); entri bertipe tak dikenal tampil di
   kedua tab dengan jujur.
-- UX daftar hitam/putih **setia ke config**: dengan kotak cari kosong, tab
-  hanya menampilkan paket yang benar-benar ada di `blacklist.txt` /
-  `whitelist.txt` (ON = aktif, OFF = penanda `!pkg`). Mengetik di kotak cari
-  memunculkan kandidat aplikasi terinstal untuk ditambahkan dalam satu tap.
-  Tanpa tombol Add dan tanpa picker. Whitelist ↔ blacklist saling
-  menyembunyikan entri aktif lawannya. Profil per game via dropdown di baris
-  game yang ON.
+- UX daftar hitam/putih **selalu menampilkan daftar aplikasi**: entri yang
+  sudah ada di `blacklist.txt` / `whitelist.txt` selalu tampil (ON = aktif,
+  OFF = penanda `!pkg`), dan aplikasi terinstal lain ikut tampil sebagai
+  kandidat — difilter hanya oleh tab User/System dan kotak cari. Jadi tab
+  kosong tidak pernah berarti "daftar hilang": selalu ada aplikasi yang bisa
+  ditap. Satu tap menambahkan ke daftar. Tanpa tombol Add dan tanpa picker.
+  Whitelist ↔ blacklist saling menyembunyikan entri aktif lawannya. Profil per
+  game via dropdown di baris game yang ON.
 
 - Di perangkat (Magisk/KernelSU WebView dengan bridge `window.fgc.exec` /
   `window.kernelsu.exec` / `window.magisk.exec`): `MagiskBackend` memanggil
@@ -154,10 +155,45 @@ tidak pernah memecah state atau menduplikasi daemon.
 - Seed hanya bila file BENAR-BENAR tidak ada (terbukti hilang 2× beruntun,
   bukan sekali baca gagal) — update tidak pernah me-replace data.
 - Backfill key config yang ditambahkan rilis baru (nilai custom tetap),
-  rescue file corrupt (backup `.bak` + reseed, hanya setelah 3× gagal baca).
+  rescue file corrupt (backup `.bak` + defaults). Rescue **hanya** di boot
+  normaliser, bukan saat install/update — install/update tidak pernah menulis
+  ulang `config.json` user.
 - Folder modul TIDAK di-symlink dan TIDAK ditulis core — hanya default bawaan
   untuk dibaca manusia; semua tulis lewat path absolut kanonis.
 - Uninstall TIDAK menghapus `/data/adb/fgc`; reinstall menemukan datanya lagi.
+
+### Format file (mudah dibaca & diedit manual)
+
+`config.json` dan `gamelist.json` ditulis **pretty** (indentasi 4 spasi,
+satu key per baris) supaya bisa langsung dibaca/diedit tanpa JSON formatter:
+
+```json
+{
+    "enabled": true,
+    "detection_mode": "hybrid",
+    "poll_interval_sec": 3,
+    "default_profile": 1,
+    "cleanup_policy": "balanced",
+    "logging": true,
+    "dry_run": false,
+    "freeze_system": false,
+    "auto_profile_rules": {
+        "note": "Auto picks Performance when a listed game is foreground, else Balance. No AI claims.",
+        "game_foreground": 2,
+        "idle": 1
+    }
+}
+```
+
+- `gamelist.json` kosong = `{"games": []}`; berisi game = dokumen multi-baris
+  dengan blok `package`/`label`/`profile` per game.
+- Penulis & pembaca terpusat: `core/gamelist.sh` (gamelist) dan
+  `core/config_manager.sh` (`fgc_cfg_pretty`/`fgc_cfg_normalize`). Pembaca
+  toleran format: file lama satu-baris atau hasil `indent=1` tetap terbaca.
+- `fgc_cfg_normalize` (dipanggil `recovery.sh` tiap boot) meng-upgrade file
+  lama ke bentuk pretty **hanya setelah** membaca ulang dan membandingkan
+  SETIAP nilai; file dengan key tak dikenal dibiarkan apa adanya, dan
+  perbaikan (file korup) selalu menyimpan `.bak` lebih dulu.
 
 ## Label & ikon aplikasi (Java helper)
 
@@ -166,10 +202,13 @@ menyediakan bitmap ikon — satu-satunya sumber adalah `PackageManager`:
 
 - `tools/java/FgcPm.java` → `bin/fgc-pm.dex` (via `tools/build_dex.py`,
   butuh Android SDK) berjalan on-device sebagai root:
-  `app_process -Djava.class.path=.../fgc-pm.dex /system/bin FgcPm list|icon|ping`
-- `list` = `pkg<TAB>label<TAB>user|system` satu panggilan (lebih cepat dari
-  N× `dumpsys`); `icon <pkg>` = base64 PNG 144px, di-cache di
-  `state/icons/<pkg>.b64`.
+  `app_process -Djava.class.path=.../fgc-pm.dex /system/bin FgcPm list|icon|icons|ping`
+- `list` = `pkg<TAB>label<TAB>user|system<TAB>versionCode` satu panggilan (lebih
+  cepat dari N× `dumpsys`); `icon <pkg>` = base64 PNG 144px; `icons <pkg...>` =
+  batch `pkg<TAB>base64` per baris — satu JVM untuk banyak ikon (startup JVM
+  yang mahal, jadi satu exec per baris bikin baris menunggu lama dan tampak
+  seperti "ikon kadang jadi huruf"). Ikon di-cache di `state/icons/<pkg>.b64`
+  dengan key `<versionCode>|g3`, jadi update aplikasi meretire bitmap-nya saja.
 - Ikon di-crop ke bounding-box alpha lalu di-scale penuh ke 144px (mask
   rounded-square bawaan ROM, latar **transparan** penuh) supaya tampil penuh
   seperti launcher — bukan kotak putih/bermargin. Penanda generasi `|g3` di
@@ -179,8 +218,9 @@ menyediakan bitmap ikon — satu-satunya sumber adalah `PackageManager`:
   fallback berlapis — semua kegagalan dicetak bersih ke stderr + exit≠0.
 - Bila helper gagal (ROM memblokir `app_process`, dsb.): otomatis fallback ke
   `pm`+`dumpsys`; `caps.javahlp` di `diag` melaporkan `yes`/`no` dengan jujur.
-  WebUI memakai avatar huruf hanya bila ikon benar-benar tak tersedia; antrean
-  ikon punya timeout per-fetch sehingga satu exec yang menggantung tidak
+  WebUI memakai avatar huruf hanya bila ikon benar-benar tak tersedia (dibatasi
+  4 percobaan batch per baris); antrean ikon diambil per-chunk (≤8 package per
+  exec) plus timeout per-exec sehingga satu exec yang menggantung tidak
   membekukan sisa baris.
 
 ## Zygisk / LSPosed (companion, opsional)
@@ -210,7 +250,7 @@ foreground, satu cleanup per sesi (lock), dry-run tersedia, sleep-based poll
 ## Build / test
 
 ```sh
-python3 build.py                 # -> build/faagamecore-v1.2.5.zip
+python3 build.py                 # -> build/faagamecore-v1.2.6.zip
 python3 tests/test_webui.py
 sh tests/test_core.sh
 sh tests/check_syntax.sh         # POSIX syntax + lint mksh: '|' di dalam ${...} dilarang

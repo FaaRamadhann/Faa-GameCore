@@ -8,6 +8,7 @@ CORE_DIR="$FGC_MODDIR/core"
 . "$CORE_DIR/config_manager.sh"
 . "$CORE_DIR/device.sh"
 . "$CORE_DIR/paths.sh"
+. "$CORE_DIR/gamelist.sh"
 
 LOCK="$FGC_STATE/session.lock"
 SESSLOCK="$FGC_STATE/sessop.lock"
@@ -17,7 +18,10 @@ fgc_profile_for() {
   # Auto(4) resolves by BATTERY level (user rule): 1-20 -> Balance(1),
   # 21-50 -> Performance(2), 51-100 -> Awaken(3). Unknown battery -> Balance.
   _g="$1"
-  _prof="$(grep -o "\"package\"[ ]*:[ ]*\"$_g\"[^}]*\"profile\"[ ]*:[ ]*[0-9]" "$FGC_CONFIG/gamelist.json" 2>/dev/null | grep -o '[0-9]$' | head -n1)"
+  # Per-game profile lookup lives in core/gamelist.sh (layout-tolerant: the
+  # gamelist is stored pretty, so a line-oriented [^}]* match would read
+  # nothing and silently fall back to the default profile for every game).
+  _prof="$(fgc_glist_profile "$FGC_CONFIG/gamelist.json" "$_g" 2>/dev/null)"
   [ -z "$_prof" ] || [ "$_prof" = "0" ] && _prof="$(fgc_cfg_get default_profile 2>/dev/null || echo 1)"
   if [ "$_prof" = "4" ]; then
     _batt="$(fgc_battery_pct 2>/dev/null)"

@@ -5,6 +5,7 @@ CORE_DIR="$FGC_MODDIR/core"
 . "$CORE_DIR/logger.sh"
 . "$CORE_DIR/paths.sh"
 . "$CORE_DIR/process_manager.sh"
+. "$CORE_DIR/config_manager.sh"
 
 fgc_recovery() {
   mkdir -p "$FGC_STATE" "$FGC_LOGS" "$FGC_CONFIG"
@@ -35,6 +36,10 @@ fgc_recovery() {
   # Runs at every boot; fgc_unfreeze_all is idempotent and keeps entries whose
   # enable failed but whose package still exists (retried next boot).
   fgc_unfreeze_all "RECOVERY"
+  # config.json: upgrade to the canonical pretty layout (readable + hand-editable)
+  # plus any key a newer release added. Data-preserving — the helper verifies
+  # every value before it renames, and refuses when it sees an unknown key.
+  fgc_cfg_normalize "$FGC_CONFIG/config.json" >/dev/null 2>&1 || true
   # validate configs exist
   for _f in config.json gamelist.json blacklist.txt whitelist.txt; do
     [ -f "$FGC_CONFIG/$_f" ] || fgc_log "CORE_ERROR" "" "recovery" "missing-$_f" ""

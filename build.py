@@ -9,7 +9,7 @@ REQUIRED = ["module.prop", "customize.sh", "uninstall.sh", "service.sh", "action
             "META-INF/com/google/android/updater-script",
             "system/bin/fgc", "system/bin/fgc-cli", "build.py",
             "core/main.sh", "core/fgc-cli.sh", "core/caps.sh", "core/device.sh",
-            "core/str.sh", "core/data_init.sh", "webroot/index.html"]
+            "core/str.sh", "core/data_init.sh", "core/gamelist.sh", "webroot/index.html"]
 EXECUTABLES = {"customize.sh", "uninstall.sh", "service.sh", "action.sh",
                "META-INF/com/google/android/update-binary",
                "system/bin/fgc", "system/bin/fgc-cli",

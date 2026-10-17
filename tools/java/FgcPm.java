@@ -1,6 +1,7 @@
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
@@ -16,10 +17,17 @@ import java.util.List;
 
 /**
  * FgcPm — FGC PackageManager helper, run on-device via:
- *   app_process -Djava.class.path=/data/adb/fgc/bin/fgc-pm.dex /system/bin FgcPm <list|icon|ping> [pkg]
+ *   app_process -Djava.class.path=/data/adb/fgc/bin/fgc-pm.dex /system/bin FgcPm <list|icon|icons|ping> [pkg...]
  *
  * Uses real PackageManager (labels + icons on every ROM, no dumpsys roulette).
  * All output is single-line tab-separated; icons as base64 PNG (144px).
+ * `list`  = pkg<TAB>label<TAB>user|system<TAB>versionCode (versionCode feeds the
+ *           icon cache key so updates retire a stale bitmap).
+ * `icon`  = one package  -> base64 PNG.
+ * `icons` = many packages -> pkg<TAB>base64 PNG per line. JVM startup dominates
+ *           icon cost (~0.5-1s), so a list of uncached icons is rendered in ONE
+ *           process instead of one process per row. Individual failures are
+ *           skipped, never fatal.
  * Any failure -> non-zero exit, CLI falls back to pm/dumpsys automatically.
  */
 public class FgcPm {
@@ -40,26 +48,49 @@ public class FgcPm {
 
     private static void run(String[] args) throws Exception {
         if (args.length == 0) {
-            System.err.println("usage: FgcPm list|icon <pkg>|ping");
+            System.err.println("usage: FgcPm list|icon <pkg>|icons <pkg...>|ping");
             System.exit(2);
         }
         PackageManager pm = systemPackageManager();
         if ("ping".equals(args[0])) {
             System.out.println("pong");
         } else if ("list".equals(args[0]) && args.length == 1) {
-            List<ApplicationInfo> apps = pm.getInstalledApplications(0);
-            for (ApplicationInfo ai : apps) {
+            // ONE binder call: getInstalledPackages carries both the
+            // ApplicationInfo and the versionCode. Calling getPackageInfo per
+            // app instead cost ~4s for 405 packages on a real device.
+            List<PackageInfo> pkgs = pm.getInstalledPackages(0);
+            for (PackageInfo pi : pkgs) {
+                ApplicationInfo ai = pi.applicationInfo;
+                if (ai == null) continue;
                 String label = safe(String.valueOf(ai.loadLabel(pm)));
                 boolean sys = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0
                         && (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0;
-                System.out.println(ai.packageName + "\t" + label + "\t" + (sys ? "system" : "user"));
+                // 4th column = versionCode. The CLI feeds it to `icon <pkg> <ver>`
+                // as the icon-cache key, so a cached bitmap is retired exactly
+                // when the app is updated. versionCode (not versionName) is used
+                // because some apps ship a new build under the same name.
+                System.out.println(ai.packageName + "\t" + label + "\t" + (sys ? "system" : "user") + "\t" + versionCodeOf(pi));
             }
         } else if ("icon".equals(args[0]) && args.length == 2 && validPkg(args[1])) {
             Bitmap bmp = renderIcon(pm, args[1]);
             if (bmp == null) System.exit(1);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(32 * 1024);
-            if (!bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)) System.exit(1);
-            System.out.println(Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP));
+            System.out.println(pngBase64(bmp));
+        } else if ("icons".equals(args[0])) {
+            // Batch render: the CLI pays ONE JVM start for a whole chunk of
+            // uncached icons. A package whose icon cannot be rendered is
+            // skipped (the caller keeps its letter avatar) instead of killing
+            // the batch; only a total miss exits non-zero.
+            int done = 0;
+            for (int i = 1; i < args.length; i++) {
+                String p = args[i];
+                if (!validPkg(p)) continue;
+                Bitmap bmp = renderIcon(pm, p);
+                if (bmp == null) continue;
+                System.out.println(p + "\t" + pngBase64(bmp));
+                bmp.recycle();
+                done++;
+            }
+            if (done == 0) System.exit(1);
         } else {
             System.err.println("bad args");
             System.exit(2);
@@ -194,18 +225,50 @@ public class FgcPm {
         return s.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
     }
 
+    /**
+     * versionCode of a package. Reflection keeps API &lt; 28 — where only the
+     * deprecated int field exists — working.
+     */
+    private static long versionCodeOf(PackageInfo pi) {
+        try {
+            Object o = PackageInfo.class.getMethod("getLongVersionCode").invoke(pi);
+            if (o instanceof Long) return (Long) o;
+        } catch (Throwable ignored) {
+            // API < 28: fall through to the int field below
+        }
+        return pi.versionCode;
+    }
+
+    private static String pngBase64(Bitmap bmp) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(32 * 1024);
+        if (!bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)) return "";
+        return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+    }
+
     private static Bitmap renderIcon(PackageManager pm, String pkg) {
         return renderDrawable(appIcon(pm, pkg));
     }
 
     private static Drawable appIcon(PackageManager pm, String pkg) {
+        // 1) The normal path.
         try {
             Drawable d = pm.getApplicationIcon(pkg);
             if (d != null) return d;
         } catch (Throwable t) {
+            // fall through
+        }
+        // 2) Some packages resolve through ApplicationInfo but not through the
+        //    string overload (visibility / default-icon edge cases).
+        try {
+            ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+            if (ai != null) {
+                Drawable d = ai.loadIcon(pm);
+                if (d != null) return d;
+            }
+        } catch (Throwable t) {
             // fall through to activity icon
         }
-        // Fallback: some apps expose the icon only on a launcher activity.
+        // 3) Fallback: some apps expose the icon only on a launcher activity.
         try {
             Intent intent = new Intent(Intent.ACTION_MAIN);
             intent.addCategory(Intent.CATEGORY_LAUNCHER);
