@@ -69,7 +69,9 @@ fgc_java() {
   # Keep PARTIAL output: `icons` renders a batch and exits non-zero only when it
   # rendered nothing, but a mid-batch failure still leaves valid rows on stdout.
   # Dropping them on rc!=0 threw away every icon that did render.
-  _jo="$(app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm "$@" 2>/dev/null)"
+  # Time-bounded: a wedged JVM must not hang the WebUI call forever. 45s leaves
+  # room inside the bridge's 60s budget for the APK fallback that runs after it.
+  _jo="$(fgc_run_timed 45 app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm "$@" 2>/dev/null)"
   [ -n "$_jo" ] || return 1
   printf '%s' "$_jo"
 }
@@ -92,7 +94,17 @@ _fgc_pick_label() {
 
 cmd_status() {
   _en="$(fgc_cfg_get enabled)"; _dp="$(fgc_cfg_get default_profile)"
-  _run="false"; [ -d "$FGC_STATE/daemon.lock" ] && _run="true"
+  _run="false"
+  # A lock DIR alone proves nothing: after a crash (SIGKILL) it stays behind, and
+  # the UI then reports ACTIVE while nothing unfreezes the blacklist. Same PID
+  # check as main.sh.
+  if [ -d "$FGC_STATE/daemon.lock" ]; then
+    _dpid="$(cat "$FGC_STATE/daemon.lock/pid" 2>/dev/null)"
+    case "$_dpid" in
+      ''|*[!0-9]*) ;;
+      *) tr '\0' ' ' < "/proc/$_dpid/cmdline" 2>/dev/null | grep -q 'core/main.sh' && _run="true" ;;
+    esac
+  fi
   _boot="$(getprop sys.boot_completed 2>/dev/null)"
   # Honest core states (never hardcoded PID, never stale PID file):
   #   DISABLED = master switch off
@@ -121,6 +133,7 @@ cmd_status() {
     _now="$(date +%s 2>/dev/null)"; [ -n "$_now" ] || _now=0
     if [ $((_now - _hn)) -ge 60 ]; then
       printf '%s' "$_now" > "$_heal" 2>/dev/null
+      rm -f "$FGC_STATE/.drain_ts" 2>/dev/null
       . "$CORE_DIR/session_controller.sh"
       if [ -z "$_game" ] || ! fgc_pkg_running "$_game"; then
         fgc_session_end >/dev/null 2>&1
@@ -319,7 +332,9 @@ cmd_set() { # set <key> <value> | set profile <1..4> [package]
   else
     if [ "$1" = "enabled" ] && [ "$2" = "false" ] && [ -s "$FGC_STATE/frozen.txt" ]; then
       # Turning the core OFF must not leave blacklist apps disabled: the daemon
-      # stops polling, so nothing would ever unfreeze them again.
+      # stops polling, so nothing would ever unfreeze them again. Bypass the
+      # 1/minute drain throttle — this is the last chance.
+      rm -f "$FGC_STATE/.drain_ts" 2>/dev/null
       . "$CORE_DIR/session_controller.sh"
       fgc_session_end >/dev/null 2>&1
     fi
@@ -364,8 +379,10 @@ _FGC_AKPM
   [ -n "$_ak_apk" ] && [ -f "$_ak_apk" ] || return 1
   # Highest-density launcher bitmap wins. Foreground/background layers are
   # skipped: they are partial (transparent) art, not a standalone icon.
+  # The listing is filtered first: a game APK can hold tens of thousands of
+  # entries, and only these few can ever be candidates.
   _ak_best=""; _ak_score=-1
-  _ak_ls="$(unzip -l "$_ak_apk" 2>/dev/null)"
+  _ak_ls="$(unzip -l "$_ak_apk" 2>/dev/null | grep -e ic_launcher -e app_icon -e '/icon\.png')"
   while IFS= read -r _ak_l || [ -n "$_ak_l" ]; do
     # `unzip -l` pads size/date columns, so the entry is the LAST field (APK
     # entry names never contain a space).
@@ -473,7 +490,7 @@ cmd_icons() {
   # Java helper (fast path). Skipped entirely when app_process is unavailable —
   # the APK fallback below needs no Java.
   if command -v app_process >/dev/null 2>&1; then
-    app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb || [ -n "$_gp" ]; do
+    fgc_run_timed 45 app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb || [ -n "$_gp" ]; do
       [ -n "$_gp" ] && [ -n "$_gb" ] || continue
       case "$_gb" in *[!a-zA-Z0-9+/=]*) continue ;; esac
       valid_pkg "$_gp" || continue

@@ -36,7 +36,9 @@ fgc_frozen_del() {
   # not happen, so we never "restore" something we never changed.
   _fp="$FGC_STATE/frozen.txt"
   [ -f "$_fp" ] || return 0
-  grep -vx "$1" "$_fp" > "$_fp.tmp" 2>/dev/null
+  # -F: a package name contains '.', which is a regex wildcard — "com.foo.app"
+  # would also match "com1foo1app" and drop the WRONG journal entry.
+  grep -v -x -F "$1" "$_fp" > "$_fp.tmp" 2>/dev/null
   [ "$?" -le 1 ] || { rm -f "$_fp.tmp" 2>/dev/null; return 1; }
   mv "$_fp.tmp" "$_fp" 2>/dev/null || { rm -f "$_fp.tmp" 2>/dev/null; return 1; }
   return 0
@@ -80,7 +82,7 @@ fgc_freeze() {
       fi
     fi
     if fgc_dry_run; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "dry-run"; continue; fi
-    if grep -qx "package:$_p" "$_fdl" 2>/dev/null; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "already-disabled"; continue; fi
+    if grep -q -x -F "package:$_p" "$_fdl" 2>/dev/null; then fgc_log "CLEANUP_SKIPPED" "$_p" "freeze" "skipped" "already-disabled"; continue; fi
     # Write-ahead journal: record the intent BEFORE disabling. `pm disable-user`
     # is persistent, so a crash/kill between the command and the bookkeeping used
     # to leave the app disabled with an EMPTY frozen.txt — nothing left to
@@ -100,7 +102,10 @@ fgc_freeze() {
   _live="$FGC_STATE/.disabled_live"
   _canv=0
   if [ -s "$_fdl.rc" ]; then
-    if fgc_snap "$_live" fgc_run_timed 15 pm list packages -d --user 0; then _canv=1; fi
+    # An EMPTY snapshot proves nothing (rc=0 with no output can happen while the
+    # service hiccups). Using it as proof would drop the write-ahead entry and
+    # leave a really-disabled app with no record — keep the entry instead.
+    if fgc_snap "$_live" fgc_run_timed 15 pm list packages -d --user 0 && [ -s "$_live" ]; then _canv=1; fi
   fi
   if [ -f "$_fdl.rc" ]; then
     # "rc pkg", space separated and read as TWO fields: a package name never
@@ -111,7 +116,7 @@ fgc_freeze() {
     while read -r _rc _p || [ -n "$_rc" ]; do
       [ -n "$_p" ] || continue
       if [ "$_canv" = "1" ]; then
-        if grep -qx "package:$_p" "$_live" 2>/dev/null; then
+        if grep -q -x -F "package:$_p" "$_live" 2>/dev/null; then
           fgc_log "CLEANUP_SUCCESS" "$_p" "freeze" "frozen" ""
         else
           # Proven NOT disabled: drop the write-ahead entry, otherwise unfreeze
@@ -152,8 +157,20 @@ fgc_pkg_disabled() {
   # so a failed probe must never be mistaken for "enabled".
   _f="$FGC_STATE/.disabled_probe"
   fgc_snap "$_f" fgc_run_timed 15 pm list packages -d --user 0 || { rm -f "$_f"; return 2; }
-  if grep -qx "package:$1" "$_f" 2>/dev/null; then rm -f "$_f"; return 0; fi
-  rm -f "$_f"; return 1
+  if grep -q -x -F "package:$1" "$_f" 2>/dev/null; then rm -f "$_f"; return 0; fi
+  if [ -s "$_f" ]; then rm -f "$_f"; return 1; fi
+  # EMPTY snapshot: rc=0 with no output means either "nothing is disabled" or
+  # "the service told us nothing". Absence is not proof, so ask the ENABLED list
+  # for positive proof instead of retiring a journal entry on a guess.
+  rm -f "$_f"
+  _e="$FGC_STATE/.enabled_probe"
+  fgc_snap "$_e" fgc_run_timed 15 pm list packages -e --user 0 || { rm -f "$_e"; return 2; }
+  if grep -q -x -F "package:$1" "$_e" 2>/dev/null; then rm -f "$_e"; return 1; fi
+  # Non-empty enabled list without the package: it is not installed for user 0
+  # (a disabled package can never appear in -e, and -d said nothing is disabled).
+  # Not installed == not stuck disabled, so the journal entry is retired.
+  if [ -s "$_e" ]; then rm -f "$_e"; return 1; fi
+  rm -f "$_e"; return 2
 }
 
 fgc_unfreeze_all() {
@@ -182,13 +199,32 @@ fgc_unfreeze_all() {
   fi
   _keep=""
   _oklist=""
+  # An EMPTY snapshot is not proof of anything: `pm list packages -d` can answer
+  # rc=0 with no output while apps really are disabled (package-service hiccup).
+  # Treating that as "nothing is disabled" retired every journal entry and left
+  # the apps disabled with an empty frozen.txt — the very state with no way back.
+  # When the batch snapshot is empty we ask per package instead (rare, and only
+  # for the entries we hold).
+  _emptysnap=0
+  [ -s "$_dis" ] || _emptysnap=1
   while IFS= read -r _p || [ -n "$_p" ]; do
     _kind=""; _norm=""
     _fgc_norm "$_p" 2>/dev/null || true
     [ "$_kind" = "entry" ] || continue
     _p="$_norm"
     [ -n "$_p" ] || continue
-    if ! grep -qx "package:$_p" "$_dis" 2>/dev/null; then
+    if [ "$_emptysnap" = "1" ]; then
+      fgc_pkg_disabled "$_p"; _pd=$?
+      if [ "$_pd" = "1" ]; then
+        fgc_log "$_ev" "$_p" "unfreeze" "enabled" "already"
+        continue
+      elif [ "$_pd" = "2" ]; then
+        _keep="$_keep$_p
+"
+        fgc_log "$_ev" "$_p" "unfreeze" "deferred" "probe-failed"
+        continue
+      fi
+    elif ! grep -q -x -F "package:$_p" "$_dis" 2>/dev/null; then
       fgc_log "$_ev" "$_p" "unfreeze" "enabled" "already"
       continue
     fi
@@ -228,23 +264,36 @@ fgc_unfreeze_all() {
   if [ -n "$_oklist" ]; then
     _live="$FGC_STATE/.disabled_live"
     _canv=0
-    if fgc_snap "$_live" fgc_run_timed 15 pm list packages -d --user 0; then _canv=1; fi
+    if fgc_snap "$_live" fgc_run_timed 15 pm list packages -d --user 0; then
+      # Same trap as above: an empty live snapshot cannot prove an enable worked.
+      [ -s "$_live" ] && _canv=1
+    fi
     while IFS= read -r _p || [ -n "$_p" ]; do
       [ -n "$_p" ] || continue
-      if [ "$_canv" = "1" ] && grep -qx "package:$_p" "$_live" 2>/dev/null; then
+      if [ "$_canv" = "1" ] && grep -q -x -F "package:$_p" "$_live" 2>/dev/null; then
         _keep="$_keep$_p
 "
         fgc_log "$_ev" "$_p" "unfreeze" "failed" "still-disabled-after-cmd"
       elif [ "$_canv" = "1" ]; then
         fgc_log "$_ev" "$_p" "unfreeze" "enabled" ""
       else
-        # The verify snapshot itself failed, so we CANNOT prove the app is back.
-        # Dropping it here (the old "enabled unverified") is exactly how an app
-        # ended up disabled forever with an empty frozen.txt: nothing left to
-        # retry, no session end left to run. Keep it and retry.
-        _keep="$_keep$_p
+        # The verify snapshot was empty or failed, so we CANNOT prove the app is
+        # back. Ask per package: only a positive "enabled" retires the entry.
+        fgc_pkg_disabled "$_p"; _pd=$?
+        if [ "$_pd" = "1" ]; then
+          fgc_log "$_ev" "$_p" "unfreeze" "enabled" ""
+        else
+          _keep="$_keep$_p
 "
-        fgc_log "$_ev" "$_p" "unfreeze" "deferred" "unverified"
+          if [ "$_pd" = "0" ]; then
+            fgc_log "$_ev" "$_p" "unfreeze" "failed" "still-disabled-after-cmd"
+          else
+            # Cannot prove the app is back. Dropping it here (the old "enabled
+            # unverified") is exactly how an app ended up disabled forever with
+            # an empty frozen.txt: nothing left to retry.
+            fgc_log "$_ev" "$_p" "unfreeze" "deferred" "unverified"
+          fi
+        fi
       fi
     done <<_FGC_OK
 $_oklist

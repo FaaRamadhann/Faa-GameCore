@@ -70,7 +70,7 @@ fgc_is_protected() {
   for _s in $FGC_PROTECTED_BASE; do [ "$_p" = "$_s" ] && return 0; done
   # dynamic extras (detected launcher, one package per line, exact match)
   if [ -f "$FGC_STATE/protected_extra.txt" ]; then
-    grep -qx "$_p" "$FGC_STATE/protected_extra.txt" 2>/dev/null && return 0
+    grep -q -x -F "$_p" "$FGC_STATE/protected_extra.txt" 2>/dev/null && return 0
   fi
   return 1
 }

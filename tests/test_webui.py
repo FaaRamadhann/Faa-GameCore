@@ -120,6 +120,10 @@ check("fgc_battery_pct" in (ROOT/"core/device.sh").read_text(encoding="utf-8"), 
 check("21-50" in app, "auto battery mapping in UI")
 check("STARTING" in app and "STOPPED" in app, "daemon state chips")
 check("btnRestart" in idx and "restartService" in be, "core restart via bridge")
+# service.sh must return to the caller (bridge reads until EOF) and the
+# supervisor must live in its own file so it can be tested directly.
+check("supervise.sh" in (ROOT/"service.sh").read_text(encoding="utf-8") and (ROOT/"core/supervise.sh").exists(),
+      "supervisor split from service.sh")
 check("btnIconProbe" in idx and "scheduleSweep" in app, "icon probe + IO fallback")
 check("refreshLight" in app and "loadPackages" in app and "scheduleRetry" in app and "debounce" in app, "perf: light refresh + lazy packages + retry + debounce")
 check("reconcile" in app and "terkonfirmasi" in app, "reconcile-on-error for switches")
@@ -190,6 +194,11 @@ for _f in code_files:
             _sel_bad.append("%s:%d" % (_f.name, _i))
 check(not _sel_bad, "never forces SELinux permissive" + ("" if not _sel_bad else ": " + ",".join(_sel_bad)))
 check("fgc_pkg_disabled" in pm, "live-state verification helper present")
+# An EMPTY disabled-snapshot (rc=0, no output) must never be read as "nothing is
+# disabled": that retired every journal entry and left apps disabled with an
+# empty frozen.txt (no record, no retry).
+check(pm.count("-s \"$_live\"") >= 1 and "_emptysnap" in pm, "empty disabled snapshot never trusted")
+check("grep -q -x -F" in pm or "grep -v -x -F" in pm, "package match is literal (dots are not wildcards)")
 check("still-disabled-after-cmd" in pm and "not-disabled-after-cmd" in pm, "failed toggles never reported as success")
 check(">/dev/null 2>&1" in pm, "pm/am chatter silenced (CLI stays valid JSON)")
 # v1.2.5: mksh portability — a bare '|' inside ${...} is PATTERN ALTERNATION on

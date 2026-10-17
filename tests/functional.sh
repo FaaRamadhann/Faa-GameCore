@@ -68,6 +68,17 @@ if [ "$1" = "path" ]; then
   case "${@: -1}" in com.apkicon*.app) echo "package:$STUB_APK"; exit 0 ;; esac
   echo "package:/data/app/${@: -1}/base.apk"; exit 0
 fi
+if [ "$1" = "list" ] && [ "$3" = "-e" ]; then
+  # enabled list: positive proof that a package is back on. Default package set
+  # minus whatever the disabled file holds, plus any extra seeded by a test.
+  { printf 'com.test.game\ncom.evil.app\ncom.whatsapp\nandroid\ncom.android.systemui\ncom.android.settings\n'
+    cat "$STUB_PKGS" 2>/dev/null
+  } | while IFS= read -r _pk; do
+    [ -n "$_pk" ] || continue
+    grep -q -x -F "package:$_pk" "$STUB_DISABLED" 2>/dev/null || echo "package:$_pk"
+  done
+  exit 0
+fi
 if [ "$1" = "list" ] && [ "$3" = "-d" ]; then
   [ "$STUB_LIST_FAIL" = "1" ] && { echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2; }
   # Fail only the SECOND disabled-snapshot of a run, i.e. the post-enable
@@ -76,6 +87,13 @@ if [ "$1" = "list" ] && [ "$3" = "-d" ]; then
     _n=$(cat "$STUB_PM_LOG.count" 2>/dev/null); [ -n "$_n" ] || _n=0
     _n=$((_n+1)); printf '%s' "$_n" > "$STUB_PM_LOG.count"
     [ "$_n" -ge 2 ] && { echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2; }
+  fi
+  # rc=0 with EMPTY output: the service "works" but tells us nothing. Must never
+  # be read as "nothing is disabled".
+  if [ "$STUB_LIST_EMPTY_1ST" = "1" ]; then
+    _n=$(cat "$STUB_PM_LOG.ecount" 2>/dev/null); [ -n "$_n" ] || _n=0
+    _n=$((_n+1)); printf '%s' "$_n" > "$STUB_PM_LOG.ecount"
+    [ "$_n" -le 1 ] && exit 0
   fi
   cat "$STUB_DISABLED" 2>/dev/null; exit 0
 fi
@@ -166,6 +184,7 @@ chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH"
 export STUB_AM_LOG="$T/am.log" STUB_PS_FILE="$T/ps.txt" STUB_PM_LOG="$T/pm.log" STUB_DISABLED="$T/disabled.txt" STUB_FROZEN="$T/data/state/frozen.txt"
 export STUB_APK="$T/fake.apk"; printf 'PK\003\004' > "$STUB_APK"
+export STUB_PKGS="$T/pkgs.txt"; : > "$STUB_PKGS"
 : > "$T/am.log"; : > "$T/ps.txt"; : > "$T/pm.log"; : > "$T/disabled.txt"
 CLI="bash $M/core/fgc-cli.sh"
 
@@ -293,6 +312,16 @@ out=$($CLI icon com.apkicon.app 2>/dev/null)
 [ "$out" = "QVBLSUNPTg==" ] && { echo "PASS icon apk fallback"; pass=$((pass+1)); } || { echo "FAIL icon apk fallback -- got: [$out]"; fail=$((fail+1)); }
 out=$($CLI icons com.apkicon2.app)
 printf '%s\n' "$out" | grep -qx 'com.apkicon2.app	QVBLSUNPTg==' && { echo "PASS icons batch apk fallback"; pass=$((pass+1)); } || { echo "FAIL icons batch apk fallback -- got: [$out]"; fail=$((fail+1)); }
+# Nothing may DEPEND on the Java helper. With app_process removed from PATH the
+# exact same calls must still return real labels and real icons (shell paths).
+mkdir -p "$T/bin2"
+for _f in "$T/bin"/*; do case "${_f##*/}" in app_process) continue ;; esac; cp "$_f" "$T/bin2/" 2>/dev/null; done
+out=$(PATH="$T/bin2:/usr/bin:/bin" bash "$M/core/fgc-cli.sh" list packages user)
+if printf '%s\n' "$out" | grep -q "^com.test.game${TAB}StubApp${TAB}user${TAB}" && ! printf '%s\n' "$out" | grep -q 'com.android.settings'; then echo "PASS labels without java"; pass=$((pass+1)); else echo "FAIL labels without java -- got: [$out]"; fail=$((fail+1)); fi
+out=$(PATH="$T/bin2:/usr/bin:/bin" bash "$M/core/fgc-cli.sh" icon com.apkicon3.app)
+[ "$out" = "QVBLSUNPTg==" ] && { echo "PASS icon without java"; pass=$((pass+1)); } || { echo "FAIL icon without java -- got: [$out]"; fail=$((fail+1)); }
+out=$(PATH="$T/bin2:/usr/bin:/bin" bash "$M/core/fgc-cli.sh" icons com.apkicon4.app)
+printf '%s\n' "$out" | grep -qx 'com.apkicon4.app	QVBLSUNPTg==' && { echo "PASS icons batch without java"; pass=$((pass+1)); } || { echo "FAIL icons batch without java -- got: [$out]"; fail=$((fail+1)); }
 # The LAST row of a batch arrives without a trailing newline (fgc_java uses
 # $(...)). Dropping it was the "icons sometimes show as letters" bug: the last
 # icon of every chunk never landed.
@@ -415,6 +444,17 @@ printf 'package:com.stale.app\npackage:com.gone.app\n' > "$T/disabled.txt"
 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -q 'enable.*com.stale.app' "$T/pm.log" && ! grep -qx 'com.stale.app' "$T/data/state/frozen.txt" 2>/dev/null; then echo "PASS recovery unfreeze"; pass=$((pass+1)); else echo "FAIL recovery unfreeze"; fail=$((fail+1)); fi
 if ! grep -qx 'com.gone.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'package-gone'; then echo "PASS gone-app dropped"; pass=$((pass+1)); else echo "FAIL gone-app dropped"; fail=$((fail+1)); fi
+# service.sh restarts the core after a crash, and main.sh runs recovery.sh on
+# every start. A live session must survive that restart: unfreezing there would
+# re-enable the blacklist while the game is still running.
+printf 'com.live.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.live.app\n' > "$T/disabled.txt"
+printf 'com.test.game\n' > "$T/data/state/session.lock"
+printf 'u0_a1 123 456 com.test.game\n' > "$T/ps.txt"
+: > "$T/pm.log"
+bash "$M/core/recovery.sh" >/dev/null 2>&1
+if grep -qx 'com.live.app' "$T/data/state/frozen.txt" && ! grep -q 'enable.*com.live.app' "$T/pm.log"; then echo "PASS recovery keeps live session frozen"; pass=$((pass+1)); else echo "FAIL recovery keeps live session frozen"; fail=$((fail+1)); fi
+rm -f "$T/data/state/session.lock"; : > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"; : > "$T/pm.log"
 # freeze_system toggle (Awaken-only, system-type): ON freezes, OFF skips.
 # Blacklist <-> Awaken <-> toggle form one connected system.
 out=$($CLI set freeze_system true); ck "freeze_system on" '"ok":true' "$out"
@@ -438,7 +478,7 @@ if grep -qx 'com.flaky.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list 
 # top of boot recovery, so an app is never stuck disabled for a whole session)
 printf 'com.evil.app\n' > "$T/data/state/frozen.txt"
 printf 'package:com.evil.app\n' > "$T/disabled.txt"
-: > "$T/pm.log"
+: > "$T/pm.log"; rm -f "$T/data/state/.drain_ts"
 out=$($CLI session-end) >/dev/null
 if grep -q 'enable.*com.evil.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS leftover unfreeze no-lock"; pass=$((pass+1)); else echo "FAIL leftover unfreeze no-lock"; fail=$((fail+1)); fi
 # an entry that is NOT in the disabled snapshot was already restored (by the
@@ -446,9 +486,19 @@ if grep -q 'enable.*com.evil.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.tx
 # re-enabled on every poll — that endless retry storm saturated the package
 # service on-device ("Failed transaction 2147483646") and nothing recovered.
 printf 'com.already.on\n' > "$T/data/state/frozen.txt"
-: > "$T/disabled.txt"; : > "$T/pm.log"
+printf 'com.already.on\n' >> "$STUB_PKGS"   # installed AND enabled (enabled-list proof)
+: > "$T/disabled.txt"; : > "$T/pm.log"; rm -f "$T/data/state/.drain_ts"
 out=$($CLI session-end) >/dev/null
 if [ ! -s "$T/data/state/frozen.txt" ] && ! grep -q 'enable' "$T/pm.log"; then echo "PASS already-enabled retired"; pass=$((pass+1)); else echo "FAIL already-enabled retired"; fail=$((fail+1)); fi
+# An EMPTY disabled-snapshot (rc=0, no output) must not be read as "nothing is
+# disabled": that retired every journal entry and left apps disabled with an
+# empty frozen.txt — no record, no retry, stuck until the user fixed it by hand.
+printf 'com.ghost.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.ghost.app\n' > "$T/disabled.txt"
+rm -f "$T/data/state/.drain_ts" "$T/pm.log.ecount"; : > "$T/pm.log"
+STUB_LIST_EMPTY_1ST=1 $CLI session-end >/dev/null 2>&1
+if grep -q 'enable.*com.ghost.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS empty snapshot not trusted"; pass=$((pass+1)); else echo "FAIL empty snapshot not trusted (frozen=$(cat "$T/data/state/frozen.txt"))"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"
 # a busy package service must cost ONE probe and defer, not fire a retry storm
 printf 'com.busy.app\n' > "$T/data/state/frozen.txt"
 printf 'package:com.busy.app\n' > "$T/disabled.txt"
@@ -471,6 +521,8 @@ sleep 30 & _bogus=$!
 mkdir -p "$T/data/state/sessop.lock"; printf '%s' "$_bogus" > "$T/data/state/sessop.lock/pid"
 printf 'com.reused.app\n' > "$T/data/state/frozen.txt"
 printf 'package:com.reused.app\n' > "$T/disabled.txt"
+# The no-session drain is throttled to 1/min; force an attempt here.
+rm -f "$T/data/state/.drain_ts"
 : > "$T/pm.log"
 out=$($CLI session-end)
 kill "$_bogus" 2>/dev/null; wait "$_bogus" 2>/dev/null
@@ -483,14 +535,28 @@ rm -rf "$T/data/state/sessop.lock"
 printf 'com.left.app\n' > "$T/data/state/frozen.txt"
 printf 'package:com.left.app\n' > "$T/disabled.txt"
 rm -f "$T/data/state/session.lock"; rm -rf "$T/data/state/daemon.lock"
-: > "$T/pm.log"
+: > "$T/pm.log"; rm -f "$T/data/state/.drain_ts" "$T/data/state/.heal_ts"
 out=$($CLI status)
 if grep -q 'enable.*com.left.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS status drains leftover freeze"; pass=$((pass+1)); else echo "FAIL status drains leftover freeze"; fail=$((fail+1)); fi
 : > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"
+# A drain attempt is throttled to 1/minute: the daemon hits the no-session
+# branch on every poll, and an app that refuses `pm enable` must not turn the
+# poll loop into a pm retry storm. com.flaky.app can never be enabled (stub).
+printf 'com.flaky.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.flaky.app\n' > "$T/disabled.txt"
+rm -f "$T/data/state/.drain_ts"
+: > "$T/pm.log"
+out=$($CLI session-end) >/dev/null
+_n1=$(grep -c 'enable' "$T/pm.log" 2>/dev/null || echo 0)
+printf 'com.flaky.app\n' > "$T/data/state/frozen.txt"
+out=$($CLI session-end) >/dev/null
+_n2=$(grep -c 'enable' "$T/pm.log" 2>/dev/null || echo 0)
+if [ "$_n1" -gt 0 ] && [ "$_n2" = "$_n1" ] && grep -qx 'com.flaky.app' "$T/data/state/frozen.txt"; then echo "PASS drain retry throttled"; pass=$((pass+1)); else echo "FAIL drain retry throttled (n1=$_n1 n2=$_n2)"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"; rm -f "$T/data/state/.drain_ts"
 # Turning the core OFF stops the daemon, so it must drain frozen entries itself.
 printf 'com.off.app\n' > "$T/data/state/frozen.txt"
 printf 'package:com.off.app\n' > "$T/disabled.txt"
-: > "$T/pm.log"
+: > "$T/pm.log"; rm -f "$T/data/state/.drain_ts"
 out=$($CLI set enabled false)
 if grep -q 'enable.*com.off.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS disable core unfreezes"; pass=$((pass+1)); else echo "FAIL disable core unfreezes"; fail=$((fail+1)); fi
 $CLI set enabled true >/dev/null 2>&1
@@ -512,9 +578,11 @@ STUB_ENABLE_LIE=1 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -qx 'com.lie.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'still-disabled-after-cmd'; then echo "PASS enable-lie demoted+kept"; pass=$((pass+1)); else echo "FAIL enable-lie demoted+kept"; fail=$((fail+1)); fi
 # honesty: a disable-user reporting success without disabling must NOT be
 # tracked (otherwise we would later "unfreeze" an app we never froze).
+# The disabled snapshot must be NON-EMPTY for that verdict: an empty one proves
+# nothing and the write-ahead entry is kept on purpose (see process_manager.sh).
 printf 'u0_a1 123 456 com.lie.app\n' > "$T/ps.txt"
 $CLI add blacklist com.lie.app >/dev/null 2>&1 || true
-: > "$T/disabled.txt"; : > "$T/data/state/frozen.txt"
+printf 'package:com.someone.else\n' > "$T/disabled.txt"; : > "$T/data/state/frozen.txt"
 printf 'android\ncom.android.systemui\ncom.android.settings\n' > "$T/data/state/.syspkgs"
 $CLI set default_profile 3 >/dev/null
 STUB_DISABLE_LIE=1 $CLI session-start com.test.game >/dev/null 2>&1

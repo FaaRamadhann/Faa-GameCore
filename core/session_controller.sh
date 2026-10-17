@@ -135,7 +135,17 @@ _fgc_session_end_locked() {
     # No active session. Still drain leftover frozen entries: a failed unfreeze
     # must never leave an app disabled for the whole session (boot recovery and
     # the next session end also retry, but those can be far away).
-    [ -s "$FGC_STATE/frozen.txt" ] && fgc_unfreeze_all "SESSION_ENDED"
+    # Throttled to one attempt per minute: the daemon reaches this branch on
+    # EVERY idle poll, and an app that keeps refusing `pm enable` would otherwise
+    # turn the poll loop into a pm retry storm (the contention that started the
+    # "Failed transaction" cascade in the first place).
+    [ -s "$FGC_STATE/frozen.txt" ] || return 0
+    _dt="$FGC_STATE/.drain_ts"
+    _dn="$(cat "$_dt" 2>/dev/null)"; [ -n "$_dn" ] || _dn=0
+    _now="$(date +%s 2>/dev/null)"; [ -n "$_now" ] || _now=0
+    [ $((_now - _dn)) -ge 60 ] || return 0
+    printf '%s' "$_now" > "$_dt" 2>/dev/null
+    fgc_unfreeze_all "SESSION_ENDED"
     return 0
   fi
   _g="$(cat "$LOCK" 2>/dev/null)"

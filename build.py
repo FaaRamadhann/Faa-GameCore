@@ -18,7 +18,7 @@ EXECUTABLES = {"customize.sh", "uninstall.sh", "service.sh", "action.sh",
                "core/foreground_monitor.sh", "core/session_controller.sh",
                "core/policy_engine.sh", "core/process_manager.sh",
                "core/config_manager.sh", "core/logger.sh", "core/recovery.sh",
-               "tools/version.sh"}
+               "core/supervise.sh", "tools/version.sh"}
 EXCLUDE_DIRS = {"temp", "__pycache__", ".git", "build", "tests/__pycache__"}
 EXCLUDE_FILES = {".DS_Store", "Thumbs.db"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".zip"}

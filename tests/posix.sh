@@ -118,5 +118,9 @@ _bad=$(grep -nE '\b(pm|dumpsys|cmd) [^|;>]*> *"?\$' "$M"/core/*.sh 2>/dev/null |
 # with "Argument list too long" and every full batch keeps its letter avatars.
 _ic=$(grep -n 'FgcPm icons' "$M/core/fgc-cli.sh" | grep -v ':[0-9]*: *#')
 case "$_ic" in *'$('*) echo "FAIL icons batch captured into a variable -- $_ic"; fail=$((fail+1)) ;; *) echo "PASS icons batch streams"; pass=$((pass+1)) ;; esac
+# Every app_process exec MUST be time-bounded: a wedged JVM would otherwise hang
+# the WebUI call (and the bridge) forever with no icon and no error.
+_ub=$(grep -nE '(^|[^_a-z])app_process ' "$M/core/fgc-cli.sh" | grep -vE '^[0-9]+: *#' | grep -v 'fgc_run_timed' | grep -v 'command -v')
+[ -z "$_ub" ] && { echo "PASS app_process calls time-bounded"; pass=$((pass+1)); } || { echo "FAIL unbounded app_process -- $_ub"; fail=$((fail+1)); }
 echo "--- $pass pass, $fail fail ---"
 exit $fail

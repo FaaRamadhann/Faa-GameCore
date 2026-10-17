@@ -48,13 +48,34 @@ wait $DPID
 if [[ "$OUT2" == *"already running"* ]]; then echo "PASS duplicate refused"; pass=$((pass+1)); else echo "FAIL duplicate refused -- got: $OUT2"; fail=$((fail+1)); fi
 n=$(grep -c 'core-started' "$T/data/logs/session.log" 2>/dev/null || true); [ -z "$n" ] && n=0
 if [ "$n" -eq 2 ]; then echo "PASS dup adds no daemon log"; pass=$((pass+1)); else echo "FAIL dup log (n=$n)"; fail=$((fail+1)); fi
-# 3. service.sh launches core end-to-end (boot stub = completed)
-export FGC_MAX_ITER=2
-: > "$T/data/logs/service.log"
+# 3. service.sh must RETURN immediately (the WebUI "Restart core" bridge reads
+# until EOF: a long-lived child holding the pipe would hang the button forever).
+_s0=$(date +%s)
 bash "$M/service.sh" >/dev/null 2>&1
-sleep 12
-if grep -q 'core-started' "$T/data/logs/session.log" 2>/dev/null; then echo "PASS service launches core"; pass=$((pass+1)); else echo "FAIL service launches core"; fail=$((fail+1)); fi
-if [ ! -d "$T/data/state/daemon.lock" ]; then echo "PASS service child cleaned up"; pass=$((pass+1)); else echo "FAIL service child lock"; rm -rf "$T/data/state/daemon.lock" 2>/dev/null; fail=$((fail+1)); fi
+_s1=$(date +%s)
+if [ $((_s1-_s0)) -le 5 ]; then echo "PASS service returns immediately"; pass=$((pass+1)); else echo "FAIL service blocked for $((_s1-_s0))s"; fail=$((fail+1)); fi
+# 3b. the supervisor really restarts a crashed core. Run it in the FOREGROUND
+# (bounded by FGC_SUPERVISE_MAX): this host kills a background child as soon as
+# the parent shell exits, unlike Android/Magisk — so backgrounding here would
+# only test the harness. FGC_MAX_ITER must be UNSET (it means "bounded run, no
+# supervision"). kill -9 leaves a stale lock behind on purpose.
+unset FGC_MAX_ITER
+export FGC_SUPERVISE_MAX=2
+rm -rf "$T/data/state/daemon.lock" 2>/dev/null
+sh "$M/core/supervise.sh" > "$T/sup.log" 2>&1 &
+SUP=$!
+sleep 8
+_p1=$(cat "$T/data/state/daemon.lock/pid" 2>/dev/null)
+kill -9 "$_p1" 2>/dev/null
+sleep 20
+_p2=$(cat "$T/data/state/daemon.lock/pid" 2>/dev/null)
+if [ -n "$_p1" ] && [ -n "$_p2" ] && [ "$_p1" != "$_p2" ]; then echo "PASS core restarted after crash"; pass=$((pass+1)); else echo "FAIL core restarted after crash (p1=$_p1 p2=$_p2)"; fail=$((fail+1)); fi
+# the stale lock left by kill -9 must be reclaimed, not treated as a live daemon
+kill -9 "$_p2" 2>/dev/null
+wait $SUP 2>/dev/null
+rm -rf "$T/data/state/daemon.lock" 2>/dev/null
+unset FGC_SUPERVISE_MAX
+export FGC_MAX_ITER=1
 # 4. stale daemon lock (dead pid) never wedges startup
 mkdir -p "$T/data/state/daemon.lock"
 printf '99999999' > "$T/data/state/daemon.lock/pid"
