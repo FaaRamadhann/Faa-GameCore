@@ -96,6 +96,28 @@ fgc_glist_pretty() {
   fi
 }
 
+fgc_glist_normalize() {
+  # $1 = gamelist.json. Upgrade a legacy COMPACT document (one line) to the
+  # pretty layout so it can be read and edited by hand. Idempotent: an already
+  # pretty file, and the canonical empty form, are left completely untouched —
+  # no rewrite on every boot. A backup is taken first and restored if the
+  # rewrite would lose a game (fgc_glist_write verifies the count).
+  _gl_nf="$1"
+  [ -f "$_gl_nf" ] || return 0
+  grep -q '"package"' "$_gl_nf" 2>/dev/null || return 0
+  [ "$(head -n 1 "$_gl_nf" 2>/dev/null)" = "{" ] && return 0
+  fgc_glist_dump "$_gl_nf" > "$_gl_nf.norm" 2>/dev/null || { rm -f "$_gl_nf.norm" 2>/dev/null; return 1; }
+  [ -s "$_gl_nf.norm" ] || { rm -f "$_gl_nf.norm" 2>/dev/null; return 1; }
+  cp "$_gl_nf" "$_gl_nf.bak" 2>/dev/null
+  if fgc_glist_write "$_gl_nf" < "$_gl_nf.norm"; then
+    rm -f "$_gl_nf.norm" 2>/dev/null
+    return 0
+  fi
+  cp "$_gl_nf.bak" "$_gl_nf" 2>/dev/null
+  rm -f "$_gl_nf.norm" 2>/dev/null
+  return 1
+}
+
 fgc_glist_write() {
   # $1 = gamelist.json. stdin: pkg<TAB>label<TAB>profile lines. Writes the
   # pretty document atomically and only then renames it over the original: a

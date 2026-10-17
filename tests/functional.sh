@@ -151,6 +151,10 @@ out=$($CLI set profile 0 com.test.game); ck "reset per-game default" '"ok":true'
 out=$($CLI set profile 9 com.test.game); ck "reject bad per-game" 'invalid profile' "$out"
 out=$($CLI list games);        ck "list games has pkg" 'com.test.game' "$out"
 out=$($CLI list);               ck "bare list defaults games" 'com.test.game' "$out"
+# `list config` must serve the USER config. The WebUI settings page used to read
+# the module's shipped copy, so after an update every toggle looked reset.
+out=$($CLI list config)
+if [ "$out" = "$(cat "$T/data/config/config.json")" ]; then echo "PASS list config = user config"; pass=$((pass+1)); else echo "FAIL list config mismatch"; fail=$((fail+1)); fi
 mkdir -p "$T/empty/config" "$T/empty/state" "$T/empty/logs"
 out=$(FGC_DATA="$T/empty" $CLI list games)
 [[ "$out" == *'"games": []'* ]] && [ -f "$T/empty/config/gamelist.json" ] && { echo "PASS missing gamelist self-heals"; pass=$((pass+1)); } || { echo "FAIL gamelist heal -- got: $out"; fail=$((fail+1)); }

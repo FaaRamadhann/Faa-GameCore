@@ -113,7 +113,7 @@ cmd_status() {
     "$_core" "$_run" "$([ "$_en" = "false" ] && echo false || echo true)" "$(jesc "$_game")" "${_prof:-1}" "$(jesc "$_lc")" "$(jesc "$_ver")" "$_dev"
 }
 
-cmd_list() { # list [games|blacklist|whitelist|logs|packages] (bare = games)
+cmd_list() { # list [games|blacklist|whitelist|logs|config|packages] (bare = games)
   [ -z "$1" ] && set -- games
   case "$1" in
     games)
@@ -122,6 +122,7 @@ cmd_list() { # list [games|blacklist|whitelist|logs|packages] (bare = games)
     blacklist) fgc_each_all "$FGC_CONFIG/blacklist.txt" ;;
     whitelist) fgc_each_all "$FGC_CONFIG/whitelist.txt" ;;
     logs) tail -n 100 "$FGC_LOGS/session.log" 2>/dev/null || true ;;
+    config) cat "$FGC_CONFIG/config.json" 2>/dev/null || echo '{}' ;;
     packages)
       # list packages [all|user|system] -> pkg<TAB>label<TAB>user|system<TAB>ver
       # (real pm/Java data; the 4th column is the app's versionCode).
@@ -441,6 +442,10 @@ cmd_diag() {
   fi
   [ -n "$_caps" ] || _caps='{"foreground":"unknown"}'
   _jv="$(fgc_java ping 2>/dev/null)"
+  # A single app_process exec can fail while another app_process/pm is starting
+  # (transient, seen as javahlp:"no" with a working dex). One retry keeps the
+  # capability report honest instead of flapping to degraded.
+  [ "$_jv" = "pong" ] || _jv="$(fgc_java ping 2>/dev/null)"
   _jh=no; [ "$_jv" = "pong" ] && _jh=yes
   _caps="$(printf '%s' "$_caps" | sed 's/}$//')"
   _caps="$_caps,\"javahlp\":\"$_jh\"}"

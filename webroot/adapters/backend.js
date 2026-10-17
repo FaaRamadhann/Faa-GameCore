@@ -131,11 +131,21 @@
     if (r && typeof r === "object" && r.error) throw new Error(r.error);
     return r;
   }
+  function q(s) {
+    // Single-quote ONE shell argument. App labels are free text from the
+    // package manager ("Picsart AI Photo Editor, Video (PicsArt)", "Clean &
+    // Boost", "Faa's Game"). Unquoted, the shell died on "(" so the add failed
+    // with no visible reason and the WebUI reported an unstable backend.
+    return "'" + String(s).replace(/'/g, "'\\''") + "'";
+  }
   DeviceBackend.prototype.status = function () { return this._run("status").then(JSON.parse); };
   DeviceBackend.prototype.fullConfig = function () {
-    var self = this;
-    return this.bridge.exec("cat \"" + self.moddir + "/config/config.json\"").then(function (r) {
-      try { return JSON.parse(r); } catch (e) { return {}; }
+    // Read the USER config (/data/adb/fgc/config), not the module's shipped
+    // copy: an update restores defaults in the module dir, so reading that
+    // showed default toggles while the device ran the user's real settings.
+    // `list config` resolves the path through core/paths.sh.
+    return this._run("list config").then(function (t) {
+      try { return JSON.parse(t); } catch (e) { return {}; }
     });
   };
   DeviceBackend.prototype.listGames = function () {
@@ -239,20 +249,20 @@
     return this._run("clearlog").then(JSON.parse).then(parseErr);
   };
   DeviceBackend.prototype.add = function (t, pkg, label, prof) {
-    return this._run("add " + t + " " + pkg + " " + (label || pkg) + " " + (prof || 0)).then(JSON.parse).then(parseErr);
+    return this._run("add " + q(t) + " " + q(pkg) + " " + q(label || pkg) + " " + q(prof || 0)).then(JSON.parse).then(parseErr);
   };
   DeviceBackend.prototype.remove = function (t, pkg) {
-    return this._run("remove " + t + " " + pkg).then(JSON.parse).then(parseErr);
+    return this._run("remove " + q(t) + " " + q(pkg)).then(JSON.parse).then(parseErr);
   };
   DeviceBackend.prototype.toggle = function (t, pkg, on) {
-    return this._run("toggle " + t + " " + pkg + " " + (on ? "on" : "off")).then(JSON.parse).then(parseErr);
+    return this._run("toggle " + q(t) + " " + q(pkg) + " " + (on ? "on" : "off")).then(JSON.parse).then(parseErr);
   };
-  DeviceBackend.prototype.setConf = function (k, v) { return this._run("set " + k + " " + v).then(JSON.parse).then(parseErr); };
+  DeviceBackend.prototype.setConf = function (k, v) { return this._run("set " + q(k) + " " + q(v)).then(JSON.parse).then(parseErr); };
   DeviceBackend.prototype.setProfile = function (p, pkg) {
-    return this._run(pkg ? "set profile " + p + " " + pkg : "set default_profile " + p).then(JSON.parse).then(parseErr);
+    return this._run(pkg ? "set profile " + q(p) + " " + q(pkg) : "set default_profile " + q(p)).then(JSON.parse).then(parseErr);
   };
   DeviceBackend.prototype.sessionStart = function (pkg) {
-    return this._run("session-start " + pkg).then(JSON.parse).then(parseErr);
+    return this._run("session-start " + q(pkg)).then(JSON.parse).then(parseErr);
   };
   DeviceBackend.prototype.sessionEnd = function () {
     return this._run("session-end").then(JSON.parse).then(parseErr);
@@ -265,7 +275,7 @@
     });
   };
   DeviceBackend.prototype.icon = function (pkg, ver) {
-    return this._run("icon " + pkg + (ver ? " " + ver : "")).then(function (t) {
+    return this._run("icon " + q(pkg) + (ver ? " " + q(ver) : "")).then(function (t) {
       t = String(t || "").trim();
       if (!t || t.charAt(0) === "{") return null;
       return "data:image/png;base64," + t;
@@ -316,7 +326,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.6",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.7",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

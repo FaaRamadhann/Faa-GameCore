@@ -36,6 +36,32 @@ _allow = set(re.findall(r'"?([A-Za-z-]+)"?:\s*1', re.search(r"var ALLOW = \{(.*?
 _called = set(re.findall(r'_run\("([a-z-]+)', be))
 check(_called <= _allow, "allowlist covers adapter calls" + ("" if _called <= _allow else " missing " + ",".join(sorted(_called - _allow))))
 check("eval(" not in app and "eval(" not in be, "no eval in webui")
+# App labels are FREE TEXT from the package manager ("Picsart AI Photo Editor,
+# Video (PicsArt)", "Clean & Boost", "Faa's Game"). The adapter used to build
+# the CLI command by concatenation, so "(" killed the shell and the add failed
+# with the WebUI reporting an unstable backend. Prove the quoting helper turns
+# every such label back into exactly ONE shell argument (round-trip via bash).
+import subprocess, shutil, json, os
+_qm = re.search(r"function q\(s\) \{(.*?)\n  \}", be, re.S)
+check(bool(_qm), "shell-quoting helper present")
+if _qm:
+    _node = shutil.which("node")
+    _bash = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
+    if not _node or not os.path.exists(_bash):
+        print("SKIP shell quoting (node/bash unavailable)")
+    else:
+        _labels = ["Plain", "Picsart AI Photo Editor, Video (PicsArt)", "Clean & Boost",
+                   "Faa's Game", 'He said "hi"', "$HOME", "back\\slash", "a;b|c>d", "tab\there"]
+        _ok = True
+        for _lab in _labels:
+            _src = "function q(s){" + _qm.group(1) + "}\nprocess.stdout.write(q(" + json.dumps(_lab) + "));"
+            _quoted = subprocess.run([_node, "-e", _src], capture_output=True, text=True).stdout
+            _back = subprocess.run([_bash, "-c", "printf '%s' " + _quoted],
+                                   capture_output=True, text=True).stdout
+            if _back != _lab:
+                _ok = False
+                print("  quoting round-trip failed for %r -> %r" % (_lab, _back))
+        check(_ok, "shell quoting survives metachar labels")
 # core checks
 cli = (ROOT/"core/fgc-cli.sh").read_text(encoding="utf-8")
 check(not re.search(r"(?<![A-Za-z_])eval\s*\(", cli), "no eval() in fgc-cli")

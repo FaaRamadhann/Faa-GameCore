@@ -93,6 +93,18 @@ if grep -q '^        "package": "com.miui.aa",$' "$GL" && grep -q '^        "lab
    && [ "$(fgc_glist_dump "$GL" | grep -c "^com.miui.bb$(printf '\t')")" = "1" ]; then
   echo "PASS strict gamelist pretty round-trip"; pass=$((pass+1))
 else echo "FAIL strict gamelist round-trip -- got: $(cat "$GL")"; fail=$((fail+1)); fi
+# legacy COMPACT gamelist (the shape every v1.2.5 device still has) is upgraded
+# to pretty at boot; values survive, and a second run is a no-op.
+printf '{"games": [{"package": "com.miui.cc", "label": "Cee: C", "profile": 2}]}\n' > "$GL"
+fgc_glist_normalize "$GL"
+if grep -q '^        "package": "com.miui.cc",$' "$GL" && [ "$(fgc_glist_profile "$GL" com.miui.cc)" = "2" ] \
+   && [ "$(fgc_glist_dump "$GL" | cut -f2)" = "Cee: C" ]; then
+  echo "PASS strict gamelist compact->pretty"; pass=$((pass+1))
+else echo "FAIL strict gamelist compact->pretty -- got: $(cat "$GL")"; fail=$((fail+1)); fi
+_m1=$(md5sum "$GL" | cut -d' ' -f1); fgc_glist_normalize "$GL"; _m2=$(md5sum "$GL" | cut -d' ' -f1)
+[ "$_m1" = "$_m2" ] && { echo "PASS strict gamelist normalize idempotent"; pass=$((pass+1)); } || { echo "FAIL strict gamelist normalize rewrote"; fail=$((fail+1)); }
+printf '{"games": []}\n' > "$GL"; fgc_glist_normalize "$GL"
+[ "$(cat "$GL")" = '{"games": []}' ] && { echo "PASS strict empty gamelist untouched"; pass=$((pass+1)); } || { echo "FAIL strict empty gamelist changed"; fail=$((fail+1)); }
 # app_process-backed tools (pm/dumpsys/cmd) MUST NOT write straight to a file:
 # the zygote context cannot write under /data/adb, so a bare redirect makes the
 # tool ABORT and every snapshot reads empty (on-device: all "already disabled"

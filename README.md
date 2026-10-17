@@ -62,6 +62,14 @@ Device bridge dideteksi berurutan (yang pertama tersedia dipakai):
   aplikasi host untuk data nyata, tidak ada daftar aplikasi palsu.
 - Allowlist command: `status|list|add|remove|toggle|set|diag`. Tidak ada
   arbitrary shell, tidak ada dynamic code execution, package match exact.
+- Setiap argumen (termasuk **label game**) di-quote single-quote sebelum masuk
+  shell. Label asli Play Store sering mengandung `(`, `&`, `'`, `$`
+  ("Picsart AI Photo Editor, Video (PicsArt)", "Clean & Boost") — tanpa quoting,
+  `sh` mati di `unexpected '('`, add gagal tanpa sebab jelas dan WebUI
+  melaporkan backend tidak stabil.
+- `fullConfig` membaca config **user** (`/data/adb/fgc/config/config.json` lewat
+  `list config`), bukan salinan bawaan di direktori modul — jadi toggle
+  Settings tidak "kembali ke default" setelah update.
 
 ## Profiles (perilaku nyata, bukan label)
 
@@ -115,6 +123,7 @@ Modul memasang shortcut PATH via overlay `system/bin`:
 ```sh
 su -c 'fgc status'        # ACTIVE | STARTING | STOPPED | ERROR | DISABLED
 fgc list blacklist
+fgc list config          # config user (bukan salinan modul) — dipakai WebUI Settings
 fgc session-start com.mobile.legends
 fgc clearlog              # kosongkan /data/adb/fgc/logs/session.log (JSON {"ok":true})
 ```
@@ -250,11 +259,11 @@ foreground, satu cleanup per sesi (lock), dry-run tersedia, sleep-based poll
 ## Build / test
 
 ```sh
-python3 build.py                 # -> build/faagamecore-v1.2.6.zip
+python3 build.py                 # -> build/faagamecore-v1.2.7.zip
 python3 tests/test_webui.py
 sh tests/test_core.sh
 sh tests/check_syntax.sh         # POSIX syntax + lint mksh: '|' di dalam ${...} dilarang
-sh tools/version.sh              # bump patch -> 1.2.6 (127)
+sh tools/version.sh              # bump patch -> 1.2.7 (128)
 ```
 
 > Catatan portabilitas: di Android `/system/bin/sh` (mksh) sebuah `|` di dalam

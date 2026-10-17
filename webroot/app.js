@@ -332,7 +332,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.2.6";
+  var UI_VERSION = "1.2.7";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {

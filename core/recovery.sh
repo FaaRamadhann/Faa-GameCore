@@ -6,6 +6,7 @@ CORE_DIR="$FGC_MODDIR/core"
 . "$CORE_DIR/paths.sh"
 . "$CORE_DIR/process_manager.sh"
 . "$CORE_DIR/config_manager.sh"
+. "$CORE_DIR/gamelist.sh"
 
 fgc_recovery() {
   mkdir -p "$FGC_STATE" "$FGC_LOGS" "$FGC_CONFIG"
@@ -40,6 +41,9 @@ fgc_recovery() {
   # plus any key a newer release added. Data-preserving — the helper verifies
   # every value before it renames, and refuses when it sees an unknown key.
   fgc_cfg_normalize "$FGC_CONFIG/config.json" >/dev/null 2>&1 || true
+  # gamelist.json: same treatment — a legacy one-line file is rewritten pretty
+  # (readable + hand-editable). An already-pretty file is never touched.
+  fgc_glist_normalize "$FGC_CONFIG/gamelist.json" >/dev/null 2>&1 || true
   # validate configs exist
   for _f in config.json gamelist.json blacklist.txt whitelist.txt; do
     [ -f "$FGC_CONFIG/$_f" ] || fgc_log "CORE_ERROR" "" "recovery" "missing-$_f" ""
