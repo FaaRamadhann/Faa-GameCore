@@ -231,6 +231,11 @@ out=$($CLI diag)
 [[ "$out" == *'"javahlp":"yes"'* ]] && { echo "PASS caps javahlp"; pass=$((pass+1)); } || { echo "FAIL caps javahlp"; fail=$((fail+1)); }
 out=$($CLI diag); ck "diag runs" 'session_lock' "$out"
 out=$($CLI list logs); ck "logs written" 'SESSION_STARTED' "$out"
+# clearlog: honest, verified truncation — pure JSON, empty afterwards, idempotent
+out=$($CLI clearlog); ck "clearlog ok" '{"ok":true}' "$out"
+[ ! -s "$T/data/logs/session.log" ] && { echo "PASS clearlog emptied"; pass=$((pass+1)); } || { echo "FAIL clearlog emptied -- size $(wc -c < "$T/data/logs/session.log")"; fail=$((fail+1)); }
+out=$($CLI list logs); [ -z "$out" ] && { echo "PASS clearlog leaves no residue"; pass=$((pass+1)); } || { echo "FAIL clearlog leaves no residue -- got: $out"; fail=$((fail+1)); }
+out=$($CLI clearlog); ck "clearlog idempotent" '{"ok":true}' "$out"
 # universal: device info detected (never hardcoded)
 out=$($CLI status)
 ck "device model detected" '"model":"TestModel"' "$out"

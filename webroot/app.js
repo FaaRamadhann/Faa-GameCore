@@ -293,7 +293,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.2.4";
+  var UI_VERSION = "1.2.5";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -770,6 +770,24 @@
     $("qLogs").addEventListener("input", debounce(renderLogs));
     $("fLogs").addEventListener("change", render);
     $("btnRefresh").addEventListener("click", function () { refresh(true); });
+    $("btnClearLog").addEventListener("click", function () {
+      // Destructive + irreversible: confirm first, then clear via backend.
+      // Only drop the local view AFTER the backend confirms the real file is
+      // empty (never fake success — a failed clear keeps the log visible).
+      var b = $("btnClearLog");
+      if (b.disabled) return;
+      if (!window.confirm("Hapus semua log sesi? Tindakan ini tidak bisa dibatalkan.")) return;
+      b.disabled = true;
+      backend.clearLog().then(function () {
+        b.disabled = false;
+        state.logs = [];
+        renderLogs();
+        toast("Log sesi dihapus", "ok");
+      }).catch(function (e) {
+        b.disabled = false;
+        toast("Gagal hapus log: " + ((e && e.message) || e), "err");
+      });
+    });
     $("btnDiag").addEventListener("click", runDiag);
     $("btnRestart").addEventListener("click", function () {
       var b = $("btnRestart");

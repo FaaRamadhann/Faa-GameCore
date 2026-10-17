@@ -53,7 +53,13 @@ while true; do
   _int="$(fgc_cfg_get poll_interval_sec)"; [ -n "$_int" ] || _int=3
   _res="$(fgc_detect_once)"
   case "$_res" in
-    GAME\|*) _pkg="${_res#GAME|}"; FGC_GAME="$_pkg" fgc_session_start "$_pkg" ;;
+    # mksh portability: inside a ${...} expansion a bare '|' is PATTERN
+    # ALTERNATION on Android's /system/bin/sh, so the original "#GAME|" strip
+    # silently returned the WHOLE string ("GAME|com.x") and every session start
+    # was rejected as unregistered — auto game detection never fired on-device.
+    # Stripping "GAME" plus one separator char with ${_res#GAME?} behaves
+    # identically on mksh, dash and bash.
+    GAME\|*) _pkg="${_res#GAME?}"; FGC_GAME="$_pkg" fgc_session_start "$_pkg" ;;
     IDLE) fgc_session_end ;;
     DISABLED) fgc_session_end ;;
   esac

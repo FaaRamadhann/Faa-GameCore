@@ -99,6 +99,10 @@ berlaku di semua profil.
   (`still-disabled-after-cmd`). Operasi gagal tidak pernah dilaporkan berhasil.
 - Unfreeze mencoba dua metode bergantian (`pm enable` dan `cmd package enable`);
   keduanya tidak membutuhkan permissive.
+- **Tidak butuh permissive.** Freeze (`pm disable-user`) dan unfreeze (`pm enable`)
+  terbukti jalan di perangkat dengan SELinux **Enforcing** — permissive *bukan*
+  syarat. Kalau operasi gagal, penyebabnya dicari dulu di logika/parse dan
+  state nyata, bukan langsung dilempar ke SELinux.
 - Bila policy sistem tetap memblokir operasi, itu dilaporkan apa adanya di
   log/Diagnostics — Diagnostics juga menampilkan mode SELinux aktif
   (`enforcing|permissive|disabled|unknown`).
@@ -111,6 +115,7 @@ Modul memasang shortcut PATH via overlay `system/bin`:
 su -c 'fgc status'        # ACTIVE | STARTING | STOPPED | ERROR | DISABLED
 fgc list blacklist
 fgc session-start com.mobile.legends
+fgc clearlog              # kosongkan /data/adb/fgc/logs/session.log (JSON {"ok":true})
 ```
 
 Status jujur tanpa PID file: `daemon.lock` = daemon hidup; `STARTING` =
@@ -205,11 +210,17 @@ foreground, satu cleanup per sesi (lock), dry-run tersedia, sleep-based poll
 ## Build / test
 
 ```sh
-python3 build.py                 # -> build/faagamecore-v1.0.0.zip
+python3 build.py                 # -> build/faagamecore-v1.2.5.zip
 python3 tests/test_webui.py
 sh tests/test_core.sh
-sh tools/version.sh              # bump patch -> 1.0.1 (101)
+sh tests/check_syntax.sh         # POSIX syntax + lint mksh: '|' di dalam ${...} dilarang
+sh tools/version.sh              # bump patch -> 1.2.6 (127)
 ```
+
+> Catatan portabilitas: di Android `/system/bin/sh` (mksh) sebuah `|` di dalam
+> `${...}` berarti **alternasi pola**, jadi `${v#GAME|}` mengembalikan string utuh.
+> bash menoleransinya sehingga lolos test lokal — karena itu ada lint statis di
+> `check_syntax.sh` dan `tests/test_webui.py` yang menolak pola tersebut.
 
 ## Keterbatasan
 

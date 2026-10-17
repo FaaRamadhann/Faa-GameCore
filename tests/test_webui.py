@@ -144,5 +144,26 @@ check(not _sel_bad, "never forces SELinux permissive" + ("" if not _sel_bad else
 check("fgc_pkg_disabled" in pm, "live-state verification helper present")
 check("still-disabled-after-cmd" in pm and "not-disabled-after-cmd" in pm, "failed toggles never reported as success")
 check(">/dev/null 2>&1" in pm, "pm/am chatter silenced (CLI stays valid JSON)")
+# v1.2.5: mksh portability — a bare '|' inside ${...} is PATTERN ALTERNATION on
+# Android's /system/bin/sh (a #/% strip then silently returns the string
+# unchanged, e.g. ${v#GAME|} -> "GAME|com.x"). bash tolerates it, so this class
+# of bug MUST be caught statically; the bash test run can never see it.
+_msh_bad = []
+for _f in list((ROOT/"core").glob("*.sh")) + list((ROOT/"system/bin").glob("*")) + \
+         [ROOT/"customize.sh", ROOT/"service.sh", ROOT/"action.sh", ROOT/"uninstall.sh"]:
+    if not _f.is_file():
+        continue
+    for _i, _ln in enumerate(_f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+        _s = _ln.strip()
+        if not _s or _s.startswith("#"):
+            continue
+        if re.search(r"\$\{[^}]*\|", _s):
+            _msh_bad.append("%s:%d" % (_f.name, _i))
+check(not _msh_bad, "mksh-safe ${...} expansions" + ("" if not _msh_bad else ": " + ",".join(_msh_bad)))
+# v1.2.5: clear-log feature across CLI + adapter + UI, honest (file verified empty)
+check("cmd_clearlog" in _cl and "clearlog" in _cl, "clear-log CLI command")
+check("DeviceBackend.prototype.clearLog" in be, "clear-log adapter method")
+check("LocalBackend.prototype.clearLog" in be, "clear-log preview parity")
+check("btnClearLog" in idx and "btnClearLog" in app and "backend.clearLog" in app, "clear-log UI wired")
 print("universal: %d failed" % len([m for m in fails if 'brand' in m or 'chip' in m or 'fallback' in m or 'caps' in m or 'protect' in m]))
 sys.exit(1 if fails else 0)

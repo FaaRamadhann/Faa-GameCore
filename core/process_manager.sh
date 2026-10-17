@@ -74,7 +74,7 @@ fgc_freeze() {
     # which would corrupt the CLI's JSON response (captured by the WebUI) and
     # the fgc_cleanup summary line. Stderr too (binder "Failed transaction").
     fgc_run_timed 20 pm disable-user --user 0 "$_p" >/dev/null 2>&1
-    printf '%s|%s\n' "$?" "$_p" >> "$_fdl.rc" 2>/dev/null
+    printf '%s %s\n' "$?" "$_p" >> "$_fdl.rc" 2>/dev/null
   done
   # Verify against ONE live snapshot: never record a package we did not actually
   # disable (honest success), and never lose one the ROM disabled despite a
@@ -85,9 +85,12 @@ fgc_freeze() {
     if fgc_run_timed 15 pm list packages -d --user 0 > "$_live" 2>/dev/null; then _canv=1; fi
   fi
   if [ -f "$_fdl.rc" ]; then
-    while IFS= read -r _l || [ -n "$_l" ]; do
-      [ -n "$_l" ] || continue
-      _rc="${_l%%|*}"; _p="${_l#*|}"
+    # "rc pkg", space separated and read as TWO fields: a package name never
+    # contains a space and rc is a bare number, so this parses identically on
+    # bash AND Android mksh. Do NOT switch to a '|' separator with a #-strip:
+    # mksh treats '|' inside a ${...} expansion as pattern alternation and
+    # returns the string unchanged (silent mis-parse).
+    while read -r _rc _p || [ -n "$_rc" ]; do
       [ -n "$_p" ] || continue
       if [ "$_canv" = "1" ]; then
         if grep -qx "package:$_p" "$_live" 2>/dev/null; then

@@ -399,6 +399,21 @@ cmd_icons() {
   fi
 }
 
+cmd_clearlog() {
+  # clearlog -> truncate the persistent session log. Prints {"ok":true} ONLY
+  # after the file is verified empty (or was already absent): a failed clear
+  # must never be reported as success. Safe against the live daemon — it opens
+  # the log O_APPEND, so its next write lands at the new EOF (offset 0).
+  # Idempotent: clearing an absent/empty log is a no-op success.
+  _lf="$FGC_LOGS/session.log"
+  if [ -e "$_lf" ]; then
+    : > "$_lf" 2>/dev/null || { echo '{"error":"clear-failed"}'; return 1; }
+    _sz="$(wc -c < "$_lf" 2>/dev/null | tr -d ' ')"
+    [ "$_sz" = "0" ] || { echo '{"error":"clear-failed"}'; return 1; }
+  fi
+  echo '{"ok":true}'
+}
+
 cmd_diag() {
   _cmds="pm dumpsys am cmd getprop grep sed"; _ok=""
   for _c in $_cmds; do command -v "$_c" >/dev/null 2>&1 && _ok="$_ok $_c:yes" || _ok="$_ok $_c:no"; done
@@ -444,6 +459,7 @@ case "$1" in
   session-start|session-end) cmd_session "$1" "$2" ;;
   icon) shift; cmd_icon "$@" ;;
   icons) shift; cmd_icons "$@" ;;
+  clearlog) cmd_clearlog ;;
   diag) cmd_diag ;;
-  *) echo "usage: fgc-cli.sh status|list|add|remove|toggle|set|session-start|session-end|icon|diag" >&2; exit 1 ;;
+  *) echo "usage: fgc-cli.sh status|list|add|remove|toggle|set|session-start|session-end|icon|icons|clearlog|diag" >&2; exit 1 ;;
 esac

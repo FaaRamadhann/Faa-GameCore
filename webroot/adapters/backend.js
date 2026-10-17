@@ -232,6 +232,9 @@
       }).reverse();
     });
   };
+  DeviceBackend.prototype.clearLog = function () {
+    return this._run("clearlog").then(JSON.parse).then(parseErr);
+  };
   DeviceBackend.prototype.add = function (t, pkg, label, prof) {
     return this._run("add " + t + " " + pkg + " " + (label || pkg) + " " + (prof || 0)).then(JSON.parse).then(parseErr);
   };
@@ -309,7 +312,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.4",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.5",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };
@@ -317,6 +320,7 @@
   LocalBackend.prototype.listWhite = function () { return Promise.resolve(this.d.white.slice()); };
   LocalBackend.prototype.packages = function () { return Promise.resolve([]); }; // honest: no fake list
   LocalBackend.prototype.logs = function () { return Promise.resolve(this.d.logs.slice().reverse()); };
+  LocalBackend.prototype.clearLog = function () { this.d.logs = []; this._save(); return Promise.resolve({ ok: true }); };
   LocalBackend.prototype.add = function (t, pkg, label, prof) {
     if (!/^[A-Za-z0-9._]+$/.test(pkg)) return Promise.resolve({ error: "invalid package" });
     var arr = t === "games" ? this.d.games.map(function (g) { return g.package; }) : this.d[t === "blacklist" ? "black" : "white"].map(function (x) { return x.pkg; });
