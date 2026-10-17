@@ -107,6 +107,20 @@ if [ "$4" = "list" ]; then
   exit 0
 fi
 if [ "$4" = "icon" ]; then echo "aVBORw0KGgo="; exit 0; fi
+if [ "$4" = "icons" ]; then
+  # One row per requested package, WITHOUT a trailing newline at the very end:
+  # that is what `$(...)` in fgc_java produces, and the CLI must still read the
+  # last row (it used to drop it -> that icon kept its letter avatar).
+  shift 4; first=1
+  for p in "$@"; do
+    [ "$p" = "com.missing.pkg" ] && continue
+    [ "$first" = "1" ] || printf '\n'
+    first=0
+    printf '%s\taVBORw0KGgo=' "$p"
+  done
+  [ "$first" = "1" ] && exit 1
+  exit 0
+fi
 exit 1
 EOF
 cat > "$T/bin/ps" <<'EOF'
@@ -236,6 +250,14 @@ out=$($CLI icon com.test.game)
 [ "$out" = "aVBORw0KGgo=" ] && [ -f "$T/data/state/icons/com.test.game.b64" ] && { echo "PASS icon cache"; pass=$((pass+1)); } || { echo "FAIL icon -- got: $out"; fail=$((fail+1)); }
 out=$($CLI icons com.test.game com.missing.pkg)
 printf '%s\n' "$out" | grep -qx 'com.test.game	aVBORw0KGgo=' && ! printf '%s\n' "$out" | grep -q 'com.missing' && { echo "PASS icons batch"; pass=$((pass+1)); } || { echo "FAIL icons batch -- got: $out"; fail=$((fail+1)); }
+# The LAST row of a batch arrives without a trailing newline (fgc_java uses
+# $(...)). Dropping it was the "icons sometimes show as letters" bug: the last
+# icon of every chunk never landed.
+rm -f "$T/data/state/icons/com.batch.one.b64" "$T/data/state/icons/com.batch.two.b64"
+out=$($CLI icons com.batch.one com.batch.two)
+if printf '%s\n' "$out" | grep -qx 'com.batch.one	aVBORw0KGgo=' && printf '%s\n' "$out" | grep -qx 'com.batch.two	aVBORw0KGgo=' && [ -f "$T/data/state/icons/com.batch.two.b64" ]; then
+  echo "PASS icons batch keeps last row"; pass=$((pass+1))
+else echo "FAIL icons batch lost last row -- got: $out"; fail=$((fail+1)); fi
 out=$($CLI icon com.test.game 9.9); ck "icon regen on ver change" 'aVBORw0KGgo=' "$out"
 [ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "9.9|g3" ] && { echo "PASS icon ver stored"; pass=$((pass+1)); } || { echo "FAIL icon ver stored"; fail=$((fail+1)); }
 out=$($CLI icon com.test.game 9.9); ck "icon ver cache hit" 'aVBORw0KGgo=' "$out"

@@ -84,11 +84,19 @@ public class FgcPm {
             for (int i = 1; i < args.length; i++) {
                 String p = args[i];
                 if (!validPkg(p)) continue;
-                Bitmap bmp = renderIcon(pm, p);
-                if (bmp == null) continue;
-                System.out.println(p + "\t" + pngBase64(bmp));
-                bmp.recycle();
-                done++;
+                // Per-package guard: ONE bad icon must never kill the rest of
+                // the batch. Without it an escaping throwable aborted the loop,
+                // so every later package in that chunk silently kept its letter
+                // avatar ("icons sometimes show as letters").
+                try {
+                    Bitmap bmp = renderIcon(pm, p);
+                    if (bmp == null) continue;
+                    System.out.println(p + "\t" + pngBase64(bmp));
+                    bmp.recycle();
+                    done++;
+                } catch (Throwable t) {
+                    System.err.println("icon failed: " + p + " " + shortErr(t));
+                }
             }
             if (done == 0) System.exit(1);
         } else {

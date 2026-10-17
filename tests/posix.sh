@@ -112,5 +112,11 @@ printf '{"games": []}\n' > "$GL"; fgc_glist_normalize "$GL"
 # Capture in the shell instead (fgc_snap / $(...)). Static check, no device.
 _bad=$(grep -nE '\b(pm|dumpsys|cmd) [^|;>]*> *"?\$' "$M"/core/*.sh 2>/dev/null | grep -v ':[0-9]*: *#')
 [ -z "$_bad" ] && { echo "PASS no app_process redirect-to-file"; pass=$((pass+1)); } || { echo "FAIL app_process redirect -- $_bad"; fail=$((fail+1)); }
+# The icon batch MUST stream from app_process straight into the read loop.
+# Round-tripping it through `$(...)` + `printf '%s' "$batch"` hits MAX_ARG_STRLEN
+# (~128 KB, and one icon is ~17 KB of base64): the shell drops the WHOLE chunk
+# with "Argument list too long" and every full batch keeps its letter avatars.
+_ic=$(grep -n 'FgcPm icons' "$M/core/fgc-cli.sh" | grep -v ':[0-9]*: *#')
+case "$_ic" in *'$('*) echo "FAIL icons batch captured into a variable -- $_ic"; fail=$((fail+1)) ;; *) echo "PASS icons batch streams"; pass=$((pass+1)) ;; esac
 echo "--- $pass pass, $fail fail ---"
 exit $fail

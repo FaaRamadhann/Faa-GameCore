@@ -66,7 +66,10 @@ FGC_ICON_GEN=3
 fgc_java() {
   command -v app_process >/dev/null 2>&1 || return 1
   cat "$FGC_DEX" >/dev/null 2>&1 || return 1
-  _jo="$(app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm "$@" 2>/dev/null)" || return 1
+  # Keep PARTIAL output: `icons` renders a batch and exits non-zero only when it
+  # rendered nothing, but a mid-batch failure still leaves valid rows on stdout.
+  # Dropping them on rc!=0 threw away every icon that did render.
+  _jo="$(app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm "$@" 2>/dev/null)"
   [ -n "$_jo" ] || return 1
   printf '%s' "$_jo"
 }
@@ -389,7 +392,15 @@ cmd_icons() {
     return 0
   }
   _tab="$(printf '\t')"
-  fgc_java icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb; do
+  # Stream the helper STRAIGHT into the loop. The old path captured the batch in
+  # `$(...)` and re-emitted it with `printf '%s' "$batch"`: one icon is ~17 KB of
+  # base64, so a full batch (~133 KB) blew past MAX_ARG_STRLEN (128 KB) and the
+  # shell dropped the WHOLE chunk with "Argument list too long" (rc 126). Every
+  # full 8-icon batch therefore vanished and those rows kept their letter avatar
+  # — the "icons sometimes show as letters" report. `|| [ -n "$_gp" ]` also keeps
+  # the last row, which arrives without a trailing newline.
+  command -v app_process >/dev/null 2>&1 || return 0
+  app_process -Djava.class.path="$FGC_DEX" /system/bin FgcPm icons $_jargs 2>/dev/null | while IFS="$_tab" read -r _gp _gb || [ -n "$_gp" ]; do
     [ -n "$_gp" ] && [ -n "$_gb" ] || continue
     case "$_gb" in *[!a-zA-Z0-9+/=]*) continue ;; esac
     valid_pkg "$_gp" || continue

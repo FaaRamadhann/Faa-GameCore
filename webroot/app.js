@@ -332,7 +332,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.2.7";
+  var UI_VERSION = "1.2.8";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -466,11 +466,12 @@
   }
   function universe(members, excludeActive) {
     // Union: anggota (ON dulu) + aplikasi terinstal, minus anggota aktif daftar lawan.
+    // Members are NEVER dropped by the cross-exclusion: the page must show what
+    // the file actually contains, even when a package is active in both lists.
     var byPkg = {};
     (state.pkgs || []).forEach(function (a) { byPkg[a.pkg] = a; });
     var seen = {}, rows = [];
     members.forEach(function (m) {
-      if (excludeActive && excludeActive[m.pkg]) return;
       seen[m.pkg] = 1;
       rows.push({ pkg: m.pkg, on: m.on !== false, member: m, info: byPkg[m.pkg] || null });
     });
@@ -519,6 +520,9 @@
     var term = ($("qGames").value || "").toLowerCase();
     var members = state.games.map(function (g) { return { pkg: g.package, label: g.label, on: true, profile: g.profile || 0 }; });
     var rows = sortMembersFirst(universe(members, null).filter(function (r) {
+      // Same rule as the whitelist/blacklist pages: a configured game is always
+      // listed, so switching the User/System tab can never hide a gamelist entry.
+      if (r.member) return matchTerm(r, term);
       return inTab(r.pkg, state.tabGames) && matchTerm(r, term);
     }));
     if (!rows.length) {
@@ -681,10 +685,12 @@
   }
   var retryTimer = null, retryCount = 0;
   function scheduleRetry(what, names) {
-    // One automatic retry for transient backend failures (flaky exec/host).
-    // Persistent failure surfaces one honest toast instead of fake-empty UI.
+    // Retry failed jobs in the background (render already happened with the
+    // previous data). Two attempts with backoff before we admit it: a single
+    // flaky exec must never surface as "backend tidak stabil" on open.
     var detail = (names && names.length) ? " [" + names.join(", ") + "]" : "";
-    if (retryCount >= 1) {
+    if (retryTimer) return;   // a retry is already queued; don't double-count
+    if (retryCount >= 2) {
       var lastErr = "";
       try {
         var log = window.__fgcErr || [];
@@ -694,12 +700,11 @@
       return;
     }
     retryCount++;
-    if (retryTimer) return;
     retryTimer = setTimeout(function () {
       retryTimer = null;
       if (what === "packages") loadPackages();
       else refreshLight();
-    }, 1500);
+    }, 1200 * retryCount);
   }
   function noteOk() {
     retryCount = 0;
