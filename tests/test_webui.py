@@ -157,7 +157,11 @@ check(not _gnu_bad, "posix grep/sed only" + ("" if not _gnu_bad else ": " + ",".
 check("protected_extra" in pe, "dynamic launcher protection")
 check("FGC_PROTECTED_BASE" in pe and "miui" not in pe.lower(), "universal protected base")
 # v1.2.4: config-faithful list rendering, honest pm toggling, read-only SELinux report
-check("if (r.member) return matchTerm(r, term)" in app and "Installed non-members are listed too" in app, "list pages render installed apps too (never members-only)")
+# v1.2.9: the page IS the file. Rendering the whole installed universe made the
+# Gamelist/Whitelist/Blacklist pages look like they ignored the config (field
+# report). Installed apps may only appear while SEARCHING (candidates to add).
+check("if (r.member) return matchTerm(r, term)" in app and "return !!term && inTab" in app
+      and "page IS the file" in app, "list pages show exactly the config (search reveals apps to add)")
 check("Cari / tambah" in idx, "search-to-add hint")
 _caps_src = (ROOT/"core/caps.sh").read_text(encoding="utf-8")
 check("fgc_selinux_mode" in _caps_src and "getenforce" in _caps_src, "selinux mode detected (read-only)")
@@ -215,5 +219,10 @@ check("version: p[3] || \"\"" in be, "list packages parses the versionCode colum
 check("ICON_BATCH" in app and "backend.icons(tokens)" in app and "requeueLater" in app, "icons resolved one exec per chunk (not per row)")
 check("pkg[=ver]" in _cl and "(=[A-Za-z0-9._]*)?" in be, "pkg=ver tokens reach the batch helper")
 check("backend.icon(target, (state.pkgVers" in app and "state.pkgVers[p]" in app, "icon requests are version aware")
+# v1.2.9: prefer the host's native icon scheme (WebUI X serves ksu://icon/<pkg>)
+# and keep the CLI base64 batch as the fallback for hosts without it.
+check('"ksu://icon/"' in be and "this.iconSrc" in be, "native icon scheme used when the host provides it")
+check("backend.iconSrc" in app and 'img.dataset.native' in app and "queueIcon(img)" in app, "native icon falls back to the CLI batch once")
+check("cfg_games" in _cl and "cfg_white" in _cl and "(core) &nbsp;vs&nbsp;" in app, "diagnostics compares core config counts with the UI")
 print("universal: %d failed" % len([m for m in fails if 'brand' in m or 'chip' in m or 'fallback' in m or 'caps' in m or 'protect' in m]))
 sys.exit(1 if fails else 0)

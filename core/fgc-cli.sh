@@ -462,7 +462,13 @@ cmd_diag() {
   _caps="$_caps,\"javahlp\":\"$_jh\"}"
   _dev="$(fgc_device_json 2>/dev/null)"; [ -n "$_dev" ] || _dev='{"manufacturer":"Unknown","model":"Unknown","android":"Unknown","sdk":"Unknown","root":"Not detected"}'
   _nic=0; _nic="$(ls "$FGC_STATE/icons" 2>/dev/null | grep -c '\.b64$' 2>/dev/null)"; [ -n "$_nic" ] || _nic=0
-  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","icons_cached":%s,"caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_nic" "$_caps" "$_dev"
+  # Counts as the CORE sees them: the WebUI shows its own parsed counts next to
+  # these, so "page doesn't match the file" is a one-glance comparison instead
+  # of a guess (a mismatch means the bridge read, not the config, is at fault).
+  _ng=0; _ng="$(grep -c '"package"' "$FGC_CONFIG/gamelist.json" 2>/dev/null)"; [ -n "$_ng" ] || _ng=0
+  _nw="$(fgc_each_active "$FGC_CONFIG/whitelist.txt" 2>/dev/null | grep -c . 2>/dev/null)"; [ -n "$_nw" ] || _nw=0
+  _nb="$(fgc_each_active "$FGC_CONFIG/blacklist.txt" 2>/dev/null | grep -c . 2>/dev/null)"; [ -n "$_nb" ] || _nb=0
+  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","icons_cached":%s,"cfg_games":%s,"cfg_white":%s,"cfg_black":%s,"caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_nic" "$_ng" "$_nw" "$_nb" "$_caps" "$_dev"
 }
 
 case "$1" in

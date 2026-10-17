@@ -111,6 +111,13 @@
     this.bridge = bridge;
     this.moddir = moddir;
     this.isWx = !!(bridge && bridge.isWx);
+    // WebUI X / MMRL serves app icons itself via ksu://icon/<pkg> (one native
+    // <img> instead of 400 CLI execs). Gated on the WebUI X marker: Kitsune
+    // Mask exposes a KSU-compatible ksu.* API but no ksu:// scheme, and a
+    // per-row failed image load there would be worse than the base64 batch.
+    this.iconSrc = (this.isWx && bridge.ksu && typeof bridge.ksu.listPackages === "function")
+      ? function (pkg) { return "ksu://icon/" + pkg; }
+      : null;
     this.bridgeInfo = bridgeInfo || { found: bridge.name, exec: true, moddir: moddir, perm: "granted" };
   }
   DeviceBackend.prototype._run = function (args) {
@@ -321,12 +328,13 @@
   function LocalBackend(bridgeInfo) {
     this.mode = "preview";
     this.d = load();
+    this.iconSrc = null;
     this.bridgeInfo = bridgeInfo || { found: null, exec: false, moddir: null, perm: "n/a" };
   }
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.8",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.9",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

@@ -259,11 +259,11 @@ foreground, satu cleanup per sesi (lock), dry-run tersedia, sleep-based poll
 ## Build / test
 
 ```sh
-python3 build.py                 # -> build/faagamecore-v1.2.8.zip
+python3 build.py                 # -> build/faagamecore-v1.2.9.zip
 python3 tests/test_webui.py
 sh tests/test_core.sh
 sh tests/check_syntax.sh         # POSIX syntax + lint mksh: '|' di dalam ${...} dilarang
-sh tools/version.sh              # bump patch -> 1.2.8 (129)
+sh tools/version.sh              # bump patch -> 1.2.9 (130)
 ```
 
 > Catatan portabilitas: di Android `/system/bin/sh` (mksh) sebuah `|` di dalam

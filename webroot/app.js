@@ -195,6 +195,18 @@
     var pkg = img.dataset.pkg;
     if (!pkg || img.dataset.done || img.dataset.queued) return;
     if (iconCache[pkg]) { showIcon(img, iconCache[pkg]); return; }
+    // Native host icon scheme (WebUI X): the WebView resolves ksu://icon/<pkg>
+    // itself — no exec, no base64, no batch size limit, no letter avatar while
+    // a chunk renders. Hosts without the scheme never take this branch.
+    if (backend && backend.iconSrc && !img.dataset.native) {
+      img.dataset.native = "1";
+      img.style.display = "block";
+      if (img.parentNode) img.parentNode.style.background = "transparent";
+      var l0 = img.parentNode && img.parentNode.querySelector("span");
+      if (l0) l0.style.display = "none";
+      img.src = backend.iconSrc(pkg);
+      return;
+    }
     // Bounded retries: the letter avatar only stands after 4 failed batches.
     if (parseInt(img.dataset.tries || "0", 10) >= 4) { img.dataset.done = "1"; return; }
     img.dataset.queued = "1";
@@ -320,6 +332,21 @@
       img.alt = ""; img.loading = "lazy";
       img.style.cssText = "width:100%;height:100%;object-fit:contain;border-radius:12px;display:none";
       img.dataset.pkg = pkg;
+      // A failed native icon falls back to the CLI base64 path exactly once;
+      // if that fails too the letter avatar stays (never a broken image box).
+      img.onerror = function () {
+        img.removeAttribute("src");
+        img.style.display = "none";
+        if (img.dataset.native) {
+          img.dataset.native = "";
+          // Put the letter avatar back (it was hidden for the native icon) and
+          // let the CLI base64 batch try once before we settle on the letter.
+          var sp = img.parentNode && img.parentNode.querySelector("span");
+          if (sp) sp.style.display = "";
+          if (img.parentNode) img.parentNode.style.background = "";
+          queueIcon(img);
+        }
+      };
       ic.appendChild(img);
       queueIcon(img);
     }
@@ -332,7 +359,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.2.8";
+  var UI_VERSION = "1.2.9";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -520,15 +547,19 @@
     var term = ($("qGames").value || "").toLowerCase();
     var members = state.games.map(function (g) { return { pkg: g.package, label: g.label, on: true, profile: g.profile || 0 }; });
     var rows = sortMembersFirst(universe(members, null).filter(function (r) {
-      // Same rule as the whitelist/blacklist pages: a configured game is always
-      // listed, so switching the User/System tab can never hide a gamelist entry.
+      // The page IS the file: only registered games are listed. Installed apps
+      // appear only while searching, as candidates to add — dumping the whole
+      // 400-app universe here made the page look like it ignored gamelist.json.
       if (r.member) return matchTerm(r, term);
-      return inTab(r.pkg, state.tabGames) && matchTerm(r, term);
+      return !!term && inTab(r.pkg, state.tabGames) && matchTerm(r, term);
     }));
     if (!rows.length) {
       if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
-      box.innerHTML = '<div class="empty"><div class="big">Tidak ada aplikasi</div>' +
-        (backend.mode === "preview" && !state.games.length ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat." : "Tidak ada yang cocok di tab ini.") + "</div>";
+      var why = term ? "Tidak ada yang cocok di tab ini." : "Belum ada game — ketik nama game untuk mencari lalu tambahkan.";
+      if (!term && !state.games.length && !(state.pkgs || []).length) why = "Daftar aplikasi perangkat belum terbaca — tekan Refresh.";
+      box.innerHTML = '<div class="empty"><div class="big">' +
+        (term ? "Tidak ada aplikasi" : "Gamelist kosong") + "</div>" +
+        (backend.mode === "preview" && !state.games.length ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat." : why) + "</div>";
       return;
     }
     var active = state.status && state.status.game;
@@ -560,23 +591,23 @@
       var box = $(cfg[0]); var term = ($(cfg[1]).value || "").toLowerCase();
       var members = cfg[2].map(function (x) { return { pkg: x.pkg, on: x.on }; });
       var rows = sortMembersFirst(universe(members, cfg[5]).filter(function (r) {
-        // Configured entries are ALWAYS listed — never hidden by the type tab
-        // nor by an empty search box — so the tab can never misrepresent the
-        // config. Installed non-members are listed too, filtered only by the
-        // type tab and the search term (same rule as the Gamelist page): the
-        // page must always show a usable app list, because a members-only view
-        // with no search term made an empty/broken read look like "the module
-        // lost my lists" and left no app to tap.
+        // Same rule as the Gamelist page: the list shown is exactly what the
+        // file contains. Installed apps surface only while searching (candidates
+        // to add), so the page can never misrepresent the config.
         if (r.member) return matchTerm(r, term);
-        return inTab(r.pkg, cfg[4]) && matchTerm(r, term);
+        return !!term && inTab(r.pkg, cfg[4]) && matchTerm(r, term);
       }));
       if (!rows.length) {
         if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
+        var why = term
+          ? "Tidak ada aplikasi yang cocok dengan pencarian / tab ini."
+          : (members.length ? "Entri tidak cocok dengan tab ini." : "Belum ada entri — ketik nama aplikasi untuk mencari lalu tambahkan.");
+        if (!term && !members.length && !(state.pkgs || []).length) why = "Daftar aplikasi perangkat belum terbaca — tekan Refresh.";
         box.innerHTML = '<div class="empty"><div class="big">' +
-          (members.length || term ? "Tidak ada yang cocok" : "Daftar kosong") + "</div>" +
+          (term ? "Tidak ada yang cocok" : "Daftar kosong") + "</div>" +
           (backend.mode === "preview" && !members.length
             ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat."
-            : (term ? "Tidak ada aplikasi yang cocok dengan pencarian / tab ini." : "Daftar aplikasi perangkat belum terbaca — tekan Refresh.")) + "</div>";
+            : why) + "</div>";
         return;
       }
       renderPaged(box, rows, function (r) {
@@ -784,6 +815,11 @@
         '<div class="kv"><span>Files</span><b class="mono">' + esc(d.files) + "</b></div>" +
         '<div class="kv"><span>Boot completed</span><b class="mono">' + esc(d.boot_completed) + "</b></div>" +
         '<div class="kv"><span>Cached icons</span><b class="mono">' + esc(d.icons_cached == null ? "?" : d.icons_cached) + "</b></div>" +
+        // Core file counts vs what THIS page parsed: equal means the render is
+        // faithful; different means the read path (bridge), not the config.
+        '<div class="kv"><span>Config games / white / black</span><b class="mono">' +
+          esc((d.cfg_games == null ? "?" : d.cfg_games) + " / " + (d.cfg_white == null ? "?" : d.cfg_white) + " / " + (d.cfg_black == null ? "?" : d.cfg_black)) +
+          " (core) &nbsp;vs&nbsp; " + esc(state.games.length + " / " + state.white.length + " / " + state.black.length) + " (UI)</b></div>" +
         '<div class="kv"><span>Backend</span><b class="mono">' + esc(backend.mode) + "</b></div>";
     }).catch(function () { $("diagBox").innerHTML = '<div class="empty">Diagnostic gagal — backend tidak merespons.</div>'; });
   }
