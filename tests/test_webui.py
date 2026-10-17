@@ -124,5 +124,25 @@ for _f in list((ROOT/"core").glob("*.sh")) + list((ROOT/"system/bin").glob("*"))
 check(not _gnu_bad, "posix grep/sed only" + ("" if not _gnu_bad else ": " + ",".join(_gnu_bad)))
 check("protected_extra" in pe, "dynamic launcher protection")
 check("FGC_PROTECTED_BASE" in pe and "miui" not in pe.lower(), "universal protected base")
+# v1.2.4: config-faithful list rendering, honest pm toggling, read-only SELinux report
+check("if (r.member) return matchTerm(r, term)" in app, "lists render config members by default (search reveals candidates)")
+check("Cari / tambah" in idx, "search-to-add hint")
+_caps_src = (ROOT/"core/caps.sh").read_text(encoding="utf-8")
+check("fgc_selinux_mode" in _caps_src and "getenforce" in _caps_src, "selinux mode detected (read-only)")
+check("SELinux" in app, "selinux shown in diagnostics")
+_sel_bad = []
+for _f in code_files:
+    if not _f.is_file():
+        continue
+    for _i, _ln in enumerate(_f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+        _s = _ln.strip()
+        if not _s or _s.startswith("#"):
+            continue
+        if "setenforce" in _s:
+            _sel_bad.append("%s:%d" % (_f.name, _i))
+check(not _sel_bad, "never forces SELinux permissive" + ("" if not _sel_bad else ": " + ",".join(_sel_bad)))
+check("fgc_pkg_disabled" in pm, "live-state verification helper present")
+check("still-disabled-after-cmd" in pm and "not-disabled-after-cmd" in pm, "failed toggles never reported as success")
+check(">/dev/null 2>&1" in pm, "pm/am chatter silenced (CLI stays valid JSON)")
 print("universal: %d failed" % len([m for m in fails if 'brand' in m or 'chip' in m or 'fallback' in m or 'caps' in m or 'protect' in m]))
 sys.exit(1 if fails else 0)

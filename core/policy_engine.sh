@@ -83,8 +83,12 @@ fgc_blacklist_active() {
 fgc_pkg_type() {
   # $1 = pkg; prints user|system|unknown (needs state/.syspkgs snapshot).
   # Grep reads a FILE (no pipe), so this always terminates.
+  # FAIL-CLOSED: if the snapshot is missing/empty we cannot PROVE user-type,
+  # so answer "unknown" (freeze skips it). Previously a missing snapshot made
+  # every package look user-type, which fail-OPEN let freeze disable system
+  # apps without the freeze_system opt-in.
   [ -n "$1" ] || { echo unknown; return 0; }
-  [ -f "$FGC_STATE/.syspkgs" ] || { echo unknown; return 0; }
+  [ -s "$FGC_STATE/.syspkgs" ] || { echo unknown; return 0; }
   if grep -qx "$1" "$FGC_STATE/.syspkgs" 2>/dev/null; then echo system; else echo user; fi
 }
 

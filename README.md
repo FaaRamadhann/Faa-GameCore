@@ -44,10 +44,13 @@ Device bridge dideteksi berurutan (yang pertama tersedia dipakai):
 - Tab **User App | System App** di Gamelist, Whitelist, dan Blacklist memakai
   tipe real (`pm -s` / `listPackages`); entri bertipe tak dikenal tampil di
   kedua tab dengan jujur.
-- UX daftar: universe aplikasi terinstal + switch (kanan ON = add/aktif,
-  kiri OFF = remove/nonaktif), tanpa tombol Add dan tanpa picker.
-  Whitelist ↔ blacklist saling menyembunyikan entri aktif lawannya.
-  Profil per game via dropdown di baris game yang ON.
+- UX daftar hitam/putih **setia ke config**: dengan kotak cari kosong, tab
+  hanya menampilkan paket yang benar-benar ada di `blacklist.txt` /
+  `whitelist.txt` (ON = aktif, OFF = penanda `!pkg`). Mengetik di kotak cari
+  memunculkan kandidat aplikasi terinstal untuk ditambahkan dalam satu tap.
+  Tanpa tombol Add dan tanpa picker. Whitelist ↔ blacklist saling
+  menyembunyikan entri aktif lawannya. Profil per game via dropdown di baris
+  game yang ON.
 
 - Di perangkat (Magisk/KernelSU WebView dengan bridge `window.fgc.exec` /
   `window.kernelsu.exec` / `window.magisk.exec`): `MagiskBackend` memanggil
@@ -73,8 +76,32 @@ whitelist/proteksi/game-foreground, dilewati saat dry-run, dan daftar
 `frozen.txt` dipulihkan saat boot bila sesi crash sebelumnya. Aplikasi yang
 sudah Anda disable manual tidak disentuh (tercatat `already-disabled`).
 
+Unfreeze tahan-gagal: `pm enable` diulang, dan bila tetap gagal entry
+**disimpan** (bukan dibuang) untuk dicoba lagi saat sesi berakhir berikutnya /
+boot — jadi app tak pernah terjebak disabled permanen. Tipe paket yang tak
+bisa dibuktikan (`state/.syspkgs` hilang/kosong) dijawab `unknown` dan
+**di-skip** (fail-closed), bukan dianggap user-type.
+
 Whitelist > blacklist > proteksi sistem > pengecualian game-foreground
 berlaku di semua profil.
+
+### Kejujuran operasi & SELinux
+
+- Modul **tidak pernah** memaksa SELinux ke `permissive` (tidak ada
+  `setenforce` di mana pun) dan tidak mengubah state SELinux global.
+- `pm`/`cmd` mencetak hasil ke **stdout**; semua panggilan `pm`/`am` di dalam
+  fungsi yang stdout-nya dipakai CLI di-silence (`>/dev/null 2>&1`) agar
+  balasan `fgc-cli.sh` selalu JSON valid (`JSON.parse` WebUI tidak rusak).
+- Setiap freeze/unfreeze **diverifikasi ke state nyata**
+  (`pm list packages -d`): disable yang "sukses" tapi tidak men-disable **tidak**
+  dicatat (`not-disabled-after-cmd`), dan enable yang "sukses" tapi app tetap
+  disabled **tidak** dilaporkan sukses — entry dipertahankan untuk retry
+  (`still-disabled-after-cmd`). Operasi gagal tidak pernah dilaporkan berhasil.
+- Unfreeze mencoba dua metode bergantian (`pm enable` dan `cmd package enable`);
+  keduanya tidak membutuhkan permissive.
+- Bila policy sistem tetap memblokir operasi, itu dilaporkan apa adanya di
+  log/Diagnostics — Diagnostics juga menampilkan mode SELinux aktif
+  (`enforcing|permissive|disabled|unknown`).
 
 ## Perintah `fgc` (terminal root)
 
@@ -138,12 +165,18 @@ menyediakan bitmap ikon — satu-satunya sumber adalah `PackageManager`:
 - `list` = `pkg<TAB>label<TAB>user|system` satu panggilan (lebih cepat dari
   N× `dumpsys`); `icon <pkg>` = base64 PNG 144px, di-cache di
   `state/icons/<pkg>.b64`.
+- Ikon di-crop ke bounding-box alpha lalu di-scale penuh ke 144px (mask
+  rounded-square bawaan ROM, latar **transparan** penuh) supaya tampil penuh
+  seperti launcher — bukan kotak putih/bermargin. Penanda generasi `|g3` di
+  `<pkg>.ver` meretire cache renderer lama sekali saja.
 - Context diperoleh tanpa ActivityThread: `Looper.prepareMainLooper()` dulu
   (tanpa ini abort `Can't create handler...`), lalu `systemMain()` dengan
   fallback berlapis — semua kegagalan dicetak bersih ke stderr + exit≠0.
 - Bila helper gagal (ROM memblokir `app_process`, dsb.): otomatis fallback ke
   `pm`+`dumpsys`; `caps.javahlp` di `diag` melaporkan `yes`/`no` dengan jujur.
-  WebUI memakai avatar huruf bila ikon tak tersedia.
+  WebUI memakai avatar huruf hanya bila ikon benar-benar tak tersedia; antrean
+  ikon punya timeout per-fetch sehingga satu exec yang menggantung tidak
+  membekukan sisa baris.
 
 ## Zygisk / LSPosed (companion, opsional)
 
@@ -187,3 +220,7 @@ sh tools/version.sh              # bump patch -> 1.0.1 (101)
   permission root; jika tidak ada, FGC idle secara graceful dan menjelaskannya
   di Diagnostics (bukan klaim kompatibilitas buta).
 - Force-stop bersifat destruktif parsial: klaim "pemulihan penuh" tidak dibuat.
+- Bila ROM/ kebijakan sistem memblokir `pm`/`cmd` enable/disable dari konteks
+  root modul, operasi dilaporkan gagal (bukan sukses palsu) dan entry freeze
+  dipertahankan untuk retry/boot. Modul tidak menurunkan SELinux sebagai
+  workaround.

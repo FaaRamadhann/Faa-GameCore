@@ -346,28 +346,33 @@ cmd_session() {
 
 cmd_icon() {
   # icon <pkg> [ver] -> base64 PNG (144px) on stdout. Disk-cached under state/icons.
-  # Optional ver (app versionName): when it differs from the cached .ver, the
-  # icon is regenerated (covers app updates without extra version lookups here).
-  # .ver format is "appver|gGEN": the GEN marker retires caches made by older
-  # renderer generations (e.g. pre-transparency), exactly once.
+  # Optional ver (app versionName): when it differs from the cached key the icon
+  # is regenerated (covers app updates without extra version lookups here).
+  # .ver key is "<appver>|gGEN": the GEN marker retires caches made by older
+  # renderer generations (e.g. pre-transparency, pre-full-bleed), exactly once
+  # even when no version is passed.
   valid_pkg "$1" || { echo '{"error":"invalid package"}'; return 1; }
   _cdir="$FGC_STATE/icons"
-  _gen=2
+  _gen=3
   mkdir -p "$_cdir" 2>/dev/null
   _cf="$_cdir/$1.b64"; _vf="$_cdir/$1.ver"
-  if [ -s "$_cf" ]; then
-    if [ -z "$2" ]; then cat "$_cf"; return 0; fi
-    if [ -f "$_vf" ]; then
-      _ov="$(cat "$_vf" 2>/dev/null)"
-      if [ "$_ov" = "$2|g$_gen" ]; then cat "$_cf"; return 0; fi
-    fi
-    # version unknown (legacy cache) or changed -> regenerate below
-  fi
-  _out="$(fgc_java icon "$1" 2>/dev/null)" || { echo '{"error":"icon-unavailable"}'; return 1; }
-  case "$_out" in '') echo '{"error":"icon-unavailable"}'; return 1 ;; esac
-  case "$_out" in *[!a-zA-Z0-9+/=]*) echo '{"error":"icon-unavailable"}'; return 1 ;; esac
+  # Cache key = "<appver>|g<GEN>". An empty appver is fine: the key becomes
+  # "|gGEN", so a legacy cache (no .ver) or one written by an older renderer is
+  # retired EXACTLY ONCE even when the caller passes no version (the WebUI
+  # usually passes none because the package list carries no versionName).
+  _want="$2|g$_gen"
+  if [ -s "$_cf" ] && [ "$(cat "$_vf" 2>/dev/null)" = "$_want" ]; then cat "$_cf"; return 0; fi
+  _out="$(fgc_java icon "$1" 2>/dev/null)"
+  case "$_out" in
+    ''|*[!a-zA-Z0-9+/=]*)
+      # Regeneration failed. A stale-but-real icon still beats a letter avatar,
+      # and accepting it (key updated) stops a broken helper from being
+      # re-executed on every single render.
+      if [ -s "$_cf" ]; then printf '%s' "$_want" > "$_vf" 2>/dev/null; cat "$_cf"; return 0; fi
+      echo '{"error":"icon-unavailable"}'; return 1 ;;
+  esac
   printf '%s' "$_out" > "$_cf" 2>/dev/null
-  if [ -n "$2" ]; then printf '%s|g%s' "$2" "$_gen" > "$_vf" 2>/dev/null; else rm -f "$_vf" 2>/dev/null; fi
+  printf '%s' "$_want" > "$_vf" 2>/dev/null
   printf '%s' "$_out"
 }
 

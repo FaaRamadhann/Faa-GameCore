@@ -106,8 +106,9 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--blue-brigh
 .applist{display:flex;flex-direction:column;gap:10px}
 .appitem{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--blue-border);
   border-radius:var(--radius-card);background:rgba(12,29,53,.55)}
-.appicon{width:42px;height:42px;border-radius:12px;flex-shrink:0;display:grid;place-items:center;
+.appicon{width:44px;height:44px;border-radius:12px;flex-shrink:0;display:grid;place-items:center;
   background:linear-gradient(135deg,#12315f,#1d4ed8);color:var(--blue-soft);font-weight:700;font-size:16px}
+.appicon img{border-radius:12px}
 .appmeta{flex:1;min-width:0}.appmeta b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .appmeta .pkg{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .appmeta .tag{font-size:11px;color:var(--blue-soft)}

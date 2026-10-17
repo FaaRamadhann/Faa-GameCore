@@ -10,6 +10,7 @@ CORE_DIR="$FGC_MODDIR/core"
 . "$CORE_DIR/paths.sh"
 
 LOCK="$FGC_STATE/session.lock"
+SESSLOCK="$FGC_STATE/sessop.lock"
 
 fgc_profile_for() {
   # $1 = game pkg. Per-game profile overrides default; 0/empty = default.
@@ -27,14 +28,44 @@ fgc_profile_for() {
   else echo "$_prof"; fi
 }
 
+fgc_sess_lock() {
+  # Serialise the freeze/unfreeze critical section. Without this a daemon poll
+  # and a manual CLI (WebUI Start/Stop) can run pm concurrently -> Android's
+  # package service answers "Failed transaction (2147483646)" and the app stays
+  # frozen after the session ended. Stale locks (dead pid) are reclaimed.
+  mkdir -p "$FGC_STATE" 2>/dev/null
+  _t=0
+  while [ "$_t" -lt 15 ]; do
+    if mkdir "$SESSLOCK" 2>/dev/null; then printf '%s' "$$" > "$SESSLOCK/pid" 2>/dev/null; return 0; fi
+    _op="$(cat "$SESSLOCK/pid" 2>/dev/null)"
+    if [ -n "$_op" ] && [ "$_op" != "$$" ] && kill -0 "$_op" 2>/dev/null; then
+      sleep 1; _t=$((_t+1)); continue
+    fi
+    rm -rf "$SESSLOCK" 2>/dev/null
+  done
+  return 1
+}
+fgc_sess_unlock() { rm -rf "$SESSLOCK" 2>/dev/null; }
+
 fgc_session_start() {
-  # $1 = game pkg. No-op if lock exists (no repeated cleanup).
+  # $1 = game pkg. Serialised; re-entrant end (different game) uses the locked
+  # internal so we never deadlock on our own sessop lock.
   _g="$1"; [ -n "$_g" ] || return 1
+  fgc_sess_lock || { fgc_log "CORE_ERROR" "$_g" "session" "busy" "sessop-lock"; return 1; }
+  _fgc_session_start_locked "$_g"
+  _rc=$?
+  fgc_sess_unlock
+  return "$_rc"
+}
+
+_fgc_session_start_locked() {
+  # $1 = game pkg. No-op if the same session lock already exists.
+  _g="$1"
   mkdir -p "$FGC_STATE"
   if [ -f "$LOCK" ]; then
     _cur="$(cat "$LOCK" 2>/dev/null)"
     if [ "$_cur" = "$_g" ]; then return 0; fi
-    fgc_session_end >/dev/null 2>&1
+    _fgc_session_end_locked >/dev/null 2>&1
   fi
   printf '%s' "$_g" > "$LOCK"
   _prof="$(fgc_profile_for "$_g")"
@@ -80,7 +111,21 @@ fgc_session_start() {
 }
 
 fgc_session_end() {
-  [ -f "$LOCK" ] || return 0
+  fgc_sess_lock || return 0
+  _fgc_session_end_locked
+  _rc=$?
+  fgc_sess_unlock
+  return "$_rc"
+}
+
+_fgc_session_end_locked() {
+  if [ ! -f "$LOCK" ]; then
+    # No active session. Still drain leftover frozen entries: a failed unfreeze
+    # must never leave an app disabled for the whole session (boot recovery and
+    # the next session end also retry, but those can be far away).
+    [ -s "$FGC_STATE/frozen.txt" ] && fgc_unfreeze_all "SESSION_ENDED"
+    return 0
+  fi
   _g="$(cat "$LOCK" 2>/dev/null)"
   # restore everything we froze this session (or a crashed one) first
   fgc_unfreeze_all "SESSION_ENDED"

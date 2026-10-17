@@ -265,9 +265,19 @@
       return "data:image/png;base64," + t;
     });
   };
-  DeviceBackend.prototype.icons = function () {
-    // Batch: all cached icons in ONE exec (pkg -> data URL map).
-    return this._run("icons").then(function (t) {
+  DeviceBackend.prototype.icons = function (pkgs) {
+    // Batch: cached icons for the given packages in ONE exec (pkg -> data URL).
+    // Passing the wanted list keeps the payload small (a full-cache dump is
+    // ~1.6 MB and can stall the WebView thread for seconds).
+    var arg = "";
+    if (pkgs && pkgs.length) {
+      var ok = [];
+      for (var i = 0; i < pkgs.length && i < 500; i++) {
+        if (/^[A-Za-z0-9._]+$/.test(String(pkgs[i]))) ok.push(pkgs[i]);
+      }
+      if (ok.length) arg = " " + ok.join(" ");
+    }
+    return this._run("icons" + arg).then(function (t) {
       var map = {};
       String(t || "").split("\n").forEach(function (l) {
         l = l.trim();
@@ -299,7 +309,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session — no device cleanup" : "", version: "1.2.3",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.4",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };
@@ -357,7 +367,7 @@
   LocalBackend.prototype.icons = function () { return Promise.resolve({}); };
   LocalBackend.prototype.diag = function () {
     return Promise.resolve({ commands: "preview-mode (no device shell)", session_lock: "absent", files: "config:ok core:ok (preview)", boot_completed: "n/a",
-      caps: { pm: "no", dumpsys: "no", am: "no", cmd: "no", getprop: "no", foreground: "none", pkg_query: "none", kill: "none", launcher: "" },
+      caps: { pm: "no", dumpsys: "no", am: "no", cmd: "no", getprop: "no", foreground: "none", pkg_query: "none", kill: "none", launcher: "", selinux: "n/a" },
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.fullConfig = function () { return Promise.resolve(Object.assign({}, this.d.config)); };

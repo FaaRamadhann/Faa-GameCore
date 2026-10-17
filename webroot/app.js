@@ -90,6 +90,15 @@
     var chip = $("chipCore"), tx = $("chipCoreTx");
     chip.className = "chip";
     if (!s) { tx.textContent = "Memuat…"; return; }
+    // Stale-WebView guard: a WebView kept alive across a module update runs
+    // OLD js against NEW backend (or vice versa) and shows wrong lists.
+    // Refuse to render instead of lying.
+    if (backend.mode === "device" && s.version && s.version !== UI_VERSION) {
+      tx.textContent = "VERSION MISMATCH";
+      chip.classList.add("err");
+      toast("WebUI v" + UI_VERSION + " vs backend v" + s.version + " — tutup WebUI sepenuhnya lalu buka ulang.", "err");
+      return;
+    }
     var map = { ACTIVE: "ok", STARTING: "info", DISABLED: "warn", STOPPED: "warn", ERROR: "err" };
     chip.classList.add(map[s.core] || "info");
     tx.textContent = "STATUS: " + s.core;
@@ -186,13 +195,25 @@
     if (!pkg || img.dataset.done || img.dataset.queued) return;
     var tries = parseInt(img.dataset.tries || "0", 10);
     // Bounded retries: a failed fetch stays retryable across re-renders, but
-    // never more than 3 attempts per image (then the letter avatar stands).
-    if (tries >= 3) { img.dataset.done = "1"; return; }
+    // never more than 4 attempts per image (then the letter avatar stands).
+    if (tries >= 4) { img.dataset.done = "1"; return; }
     img.dataset.tries = String(tries + 1);
     if (iconCache[pkg]) { showIcon(img, iconCache[pkg]); return; }
     img.dataset.queued = "1";
     iconQueue.push(img);
     pumpIcons();
+  }
+  function withTimeout(p, ms) {
+    // A hanging bridge exec must never wedge the queue: with iconBusy stuck
+    // true every later row would keep its letter avatar for good.
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var t = setTimeout(function () {
+        if (settled) return; settled = true; reject(new Error("icon-timeout"));
+      }, ms);
+      p.then(function (v) { if (settled) return; settled = true; clearTimeout(t); resolve(v); },
+             function (e) { if (settled) return; settled = true; clearTimeout(t); reject(e); });
+    });
   }
   function pumpIcons() {
     if (iconBusy) return;
@@ -202,11 +223,12 @@
     iconBusy = true;
     // Macrotask yield: on sync bridges each fetch blocks the thread for a
     // second or more — without this the UI freezes through the whole queue.
-    var ver = (state.pkgVers && state.pkgVers[img.dataset.pkg]) || "";
+    var pkg = img.dataset.pkg;
+    var ver = (state.pkgVers && state.pkgVers[pkg]) || "";
     setTimeout(function () {
-      backend.icon(img.dataset.pkg, ver).then(function (url) {
+      withTimeout(backend.icon(pkg, ver), 25000).then(function (url) {
         iconBusy = false;
-        if (url) { iconCache[img.dataset.pkg] = url; showIcon(img, url); }
+        if (url) { iconCache[pkg] = url; showIcon(img, url); }
         pumpIcons();
       }).catch(function () { iconBusy = false; pumpIcons(); });
     }, 30);
@@ -220,8 +242,16 @@
     }
   }
   function loadIconBatch() {
-    // One exec for the whole disk cache; individual fetch covers the rest.
-    return backend.icons().then(function (map) {
+    // One exec for the LISTED packages' cached icons only. A full-cache dump
+    // is ~1.6 MB and stalls the WebView thread; the picker fetches the rest
+    // individually on demand.
+    var seen = {}, want = [];
+    function add(p) { if (p && !seen[p]) { seen[p] = 1; want.push(p); } }
+    (state.games || []).forEach(function (g) { if (g) add(g.package); });
+    (state.black || []).forEach(function (x) { if (x) add(x.pkg); });
+    (state.white || []).forEach(function (x) { if (x) add(x.pkg); });
+    if (!want.length) return Promise.resolve();
+    return backend.icons(want).then(function (map) {
       var changed = false, k;
       for (k in map) {
         if (map.hasOwnProperty(k) && map[k] && !iconCache[k]) { iconCache[k] = map[k]; changed = true; }
@@ -233,7 +263,11 @@
     img.dataset.done = "1";
     img.src = url;
     img.style.display = "block";
-    var letter = img.parentNode.querySelector("span");
+    // Full transparent launcher icon: drop the blue letter-avatar box behind it
+    // (otherwise the gradient peeks through the icon's transparent corners and
+    // the icon looks boxed instead of full).
+    if (img.parentNode) img.parentNode.style.background = "transparent";
+    var letter = img.parentNode && img.parentNode.querySelector("span");
     if (letter) letter.style.display = "none";
   }
   function appRow(name, pkg, extra, rightEl) {
@@ -259,6 +293,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
+  var UI_VERSION = "1.2.4";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -482,12 +517,20 @@
       var box = $(cfg[0]); var term = ($(cfg[1]).value || "").toLowerCase();
       var members = cfg[2].map(function (x) { return { pkg: x.pkg, on: x.on }; });
       var rows = sortMembersFirst(universe(members, cfg[5]).filter(function (r) {
-        return inTab(r.pkg, cfg[4]) && matchTerm(r, term);
+        // Configured entries are ALWAYS listed — never hidden by the type tab
+        // nor by an empty search box — so the tab can never misrepresent the
+        // config. Installed non-members surface only while searching and only
+        // in the matching type tab, keeping "search to add" a single tap.
+        if (r.member) return matchTerm(r, term);
+        return !!term && inTab(r.pkg, cfg[4]) && matchTerm(r, term);
       }));
       if (!rows.length) {
         if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
-        box.innerHTML = '<div class="empty"><div class="big">Tidak ada aplikasi</div>' +
-          (backend.mode === "preview" && !members.length ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat." : "Tidak ada yang cocok (entri aktif daftar lawan disembunyikan).") + "</div>";
+        box.innerHTML = '<div class="empty"><div class="big">' +
+          (members.length ? "Tidak ada yang cocok" : "Daftar kosong") + "</div>" +
+          (backend.mode === "preview" && !members.length
+            ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat."
+            : (term ? "Tidak ada aplikasi yang cocok dengan pencarian." : "Belum ada paket di daftar ini — ketik untuk mencari lalu tambahkan.")) + "</div>";
         return;
       }
       renderPaged(box, rows, function (r) {
@@ -683,6 +726,7 @@
         '<div class="kv"><span>Detected launcher</span><b class="mono">' + esc(caps.launcher || "Not detected") + "</b></div>" +
         '<div class="kv"><span>Foreground source</span><b>' + fgNote + "</b></div>" +
         '<div class="kv"><span>Package query</span><b class="mono">' + esc(caps.pkg_query || "?") + "</b></div>" +
+        '<div class="kv"><span>SELinux</span><b class="mono">' + esc(caps.selinux || "unknown") + "</b></div>" +
         '<div class="kv"><span>Kill method</span><b class="mono">' + esc(caps.kill || "?") + "</b></div>";
       $("diagBox").innerHTML = capRows +
         '<div class="kv"><span>WebView bridge</span><b class="mono">' + esc(bi.found || "none (preview)") + "</b></div>" +

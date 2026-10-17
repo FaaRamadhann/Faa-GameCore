@@ -232,22 +232,21 @@ public class FgcPm {
     private static Bitmap renderDrawable(Drawable d) {
         if (d == null) return null;
         try {
+            Bitmap b = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
             if (d instanceof BitmapDrawable) {
                 Bitmap src = ((BitmapDrawable) d).getBitmap();
                 if (src != null && src.getWidth() > 0 && src.getHeight() > 0) {
-                    Bitmap b = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888);
-                    Canvas c = new Canvas(b);
-                    float scale = Math.max(ICON_PX / (float) src.getWidth(), ICON_PX / (float) src.getHeight());
+                    // contain (min) so non-square legacy bitmaps are never stretched
+                    float scale = Math.min(ICON_PX / (float) src.getWidth(), ICON_PX / (float) src.getHeight());
                     float w = src.getWidth() * scale, h = src.getHeight() * scale;
                     android.graphics.RectF dst = new android.graphics.RectF(
                             (ICON_PX - w) / 2f, (ICON_PX - h) / 2f,
                             (ICON_PX + w) / 2f, (ICON_PX + h) / 2f);
                     c.drawBitmap(src, null, dst, null);
-                    return b;
+                    return trimFill(b);
                 }
             }
-            Bitmap b = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888);
-            Canvas c = new Canvas(b);
             if (Build.VERSION.SDK_INT >= 26 && d instanceof AdaptiveIconDrawable) {
                 AdaptiveIconDrawable ad = (AdaptiveIconDrawable) d;
                 Drawable bg = ad.getBackground(), fg = ad.getForeground();
@@ -266,9 +265,48 @@ public class FgcPm {
                 d.setBounds(0, 0, ICON_PX, ICON_PX);
                 d.draw(c);
             }
-            return b;
+            return trimFill(b);
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * Launcher look, not letterboxed: many ROMs (MIUI/HyperOS) hand back a
+     * pre-masked icon that occupies only ~82% of the canvas with a transparent
+     * margin, so a contain-fit row shows a shrunken icon. Trim the fully
+     * transparent border (never visible pixels), then scale the trimmed region
+     * back up to fill ICON_PX. Aspect is preserved (min-scale, centred) so a
+     * rounded-square mask stays a rounded square touching every edge.
+     */
+    private static Bitmap trimFill(Bitmap src) {
+        int w = src.getWidth(), h = src.getHeight();
+        if (w <= 0 || h <= 0) return src;
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        int[] row = new int[w];
+        for (int y = 0; y < h; y++) {
+            src.getPixels(row, 0, w, 0, y, w, 1);
+            for (int x = 0; x < w; x++) {
+                if ((row[x] >>> 24) > 8) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (maxX < 0) return src;                 // fully transparent: leave as-is
+        int cw = maxX - minX + 1, ch = maxY - minY + 1;
+        if (cw >= w && ch >= h) return src;       // already full-bleed
+        Bitmap out = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        android.graphics.Rect srcR = new android.graphics.Rect(minX, minY, maxX + 1, maxY + 1);
+        float sc = Math.min(ICON_PX / (float) cw, ICON_PX / (float) ch);
+        float dw = cw * sc, dh = ch * sc;
+        android.graphics.RectF dst = new android.graphics.RectF(
+                (ICON_PX - dw) / 2f, (ICON_PX - dh) / 2f,
+                (ICON_PX + dw) / 2f, (ICON_PX + dh) / 2f);
+        c.drawBitmap(src, srcR, dst, null);
+        return out;
     }
 }

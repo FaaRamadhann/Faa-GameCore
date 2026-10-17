@@ -30,18 +30,39 @@ cat > "$T/bin/magisk" <<'EOF'
 EOF
 cat > "$T/bin/cmd" <<'EOF'
 #!/usr/bin/env bash
+echo "$@" >> "$STUB_PM_LOG"
+if [ "$1" = "package" ] && [ "$2" = "enable" ]; then
+  case "${@: -1}" in com.gone.app|com.flaky.app) exit 1 ;; esac
+  grep -v "^package:${@: -1}$" "$STUB_DISABLED" 2>/dev/null > "$STUB_DISABLED.tmp" || true
+  mv "$STUB_DISABLED.tmp" "$STUB_DISABLED" 2>/dev/null || true
+  exit 0
+fi
 echo "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true"
 echo "com.test.launcher/com.test.launcher.Home"
 EOF
 cat > "$T/bin/pm" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "$STUB_PM_LOG"
-if [ "$1" = "disable-user" ]; then printf '%s\n' "${@: -1}" >> "$STUB_DISABLED"; exit 0; fi
+if [ "$1" = "disable-user" ]; then
+  echo "Package ${@: -1} new state: disabled-user"   # real pm prints on STDOUT
+  [ "$STUB_DISABLE_LIE" = "1" ] && exit 0             # lie: claims ok, no change
+  printf 'package:%s\n' "${@: -1}" >> "$STUB_DISABLED"; exit 0
+fi
 if [ "$1" = "enable" ]; then
-  if [ "${@: -1}" = "com.gone.app" ]; then exit 1; fi
-  grep -v "^${@: -1}$" "$STUB_DISABLED" 2>/dev/null > "$STUB_DISABLED.tmp" || true
+  case "${@: -1}" in
+    com.gone.app|com.flaky.app)
+      echo "cmd: Failure calling service package: Failed transaction (2147483646)"; exit 1 ;;
+  esac
+  echo "Package ${@: -1} new state: enabled"          # real pm prints on STDOUT
+  [ "$STUB_ENABLE_LIE" = "1" ] && exit 0               # lie: claims ok, stays disabled
+  grep -v "^package:${@: -1}$" "$STUB_DISABLED" 2>/dev/null > "$STUB_DISABLED.tmp" || true
   mv "$STUB_DISABLED.tmp" "$STUB_DISABLED" 2>/dev/null || true
   exit 0
+fi
+if [ "$1" = "path" ]; then
+  # existence probe: answers for DISABLED packages too; gone => no output.
+  case "${@: -1}" in com.gone.app) exit 0 ;; esac
+  echo "package:/data/app/${@: -1}/base.apk"; exit 0
 fi
 if [ "$1" = "list" ] && [ "$3" = "-d" ]; then cat "$STUB_DISABLED" 2>/dev/null; exit 0; fi
 if [ "$3" = "-s" ]; then echo "package:android"; echo "package:com.android.systemui"; echo "package:com.android.settings"; exit 0; fi
@@ -200,8 +221,12 @@ out=$($CLI icon com.test.game)
 out=$($CLI icons com.test.game com.missing.pkg)
 printf '%s\n' "$out" | grep -qx 'com.test.game	aVBORw0KGgo=' && ! printf '%s\n' "$out" | grep -q 'com.missing' && { echo "PASS icons batch"; pass=$((pass+1)); } || { echo "FAIL icons batch -- got: $out"; fail=$((fail+1)); }
 out=$($CLI icon com.test.game 9.9); ck "icon regen on ver change" 'aVBORw0KGgo=' "$out"
-[ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "9.9|g2" ] && { echo "PASS icon ver stored"; pass=$((pass+1)); } || { echo "FAIL icon ver stored"; fail=$((fail+1)); }
+[ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "9.9|g3" ] && { echo "PASS icon ver stored"; pass=$((pass+1)); } || { echo "FAIL icon ver stored"; fail=$((fail+1)); }
 out=$($CLI icon com.test.game 9.9); ck "icon ver cache hit" 'aVBORw0KGgo=' "$out"
+# legacy/pre-gen cache (no .ver) must retire even when NO version is passed
+rm -f "$T/data/state/icons/com.test.game.ver"
+out=$($CLI icon com.test.game)
+if [ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "|g3" ]; then echo "PASS icon legacy retired no-ver"; pass=$((pass+1)); else echo "FAIL icon legacy retired no-ver"; fail=$((fail+1)); fi
 out=$($CLI diag)
 [[ "$out" == *'"javahlp":"yes"'* ]] && { echo "PASS caps javahlp"; pass=$((pass+1)); } || { echo "FAIL caps javahlp"; fail=$((fail+1)); }
 out=$($CLI diag); ck "diag runs" 'session_lock' "$out"
@@ -312,6 +337,60 @@ if grep -q 'disable-user.*com.android.settings' "$T/pm.log"; then echo "PASS fre
 out=$($CLI session-end) >/dev/null
 out=$($CLI set default_profile 2) >/dev/null; out=$($CLI set freeze_system false) >/dev/null
 out=$($CLI remove blacklist com.android.settings) >/dev/null
+# unfreeze resilience: a transient pm-enable failure must KEEP the entry (app
+# still exists) for the next retry, never silently drop it (=> app stuck off).
+printf 'com.flaky.app\n' > "$T/data/state/frozen.txt"
+bash "$M/core/recovery.sh" >/dev/null 2>&1
+if grep -qx 'com.flaky.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'kept-for-retry'; then echo "PASS unfreeze fail kept for retry"; pass=$((pass+1)); else echo "FAIL unfreeze fail kept for retry"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"
+# leftover frozen entries are drained even with NO session lock (belt+braces on
+# top of boot recovery, so an app is never stuck disabled for a whole session)
+printf 'com.evil.app\n' > "$T/data/state/frozen.txt"
+: > "$T/pm.log"
+out=$($CLI session-end) >/dev/null
+if grep -q 'enable.*com.evil.app' "$T/pm.log" && [ ! -s "$T/data/state/frozen.txt" ]; then echo "PASS leftover unfreeze no-lock"; pass=$((pass+1)); else echo "FAIL leftover unfreeze no-lock"; fail=$((fail+1)); fi
+# CLI stdout must stay VALID JSON: pm chatter is silenced, so the WebUI's
+# JSON.parse never sees "Package X new state: ..." before the reply.
+printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
+$CLI set default_profile 3 >/dev/null; $CLI set freeze_system false >/dev/null
+out=$($CLI session-start com.test.game)
+if [ "$out" = '{"ok":true}' ]; then echo "PASS session-start stdout pure JSON"; pass=$((pass+1)); else echo "FAIL session-start stdout -- got: [$out]"; fail=$((fail+1)); fi
+out=$($CLI session-end)
+if [ "$out" = '{"ok":true}' ]; then echo "PASS session-end stdout pure JSON"; pass=$((pass+1)); else echo "FAIL session-end stdout -- got: [$out]"; fail=$((fail+1)); fi
+$CLI set default_profile 2 >/dev/null
+# honesty: an enable that reports success but leaves the app disabled must NOT
+# be reported as success — demoted + kept for retry via a live-state check.
+printf 'package:com.lie.app\n' > "$T/disabled.txt"
+printf 'com.lie.app\n' > "$T/data/state/frozen.txt"
+STUB_ENABLE_LIE=1 bash "$M/core/recovery.sh" >/dev/null 2>&1
+if grep -qx 'com.lie.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'still-disabled-after-cmd'; then echo "PASS enable-lie demoted+kept"; pass=$((pass+1)); else echo "FAIL enable-lie demoted+kept"; fail=$((fail+1)); fi
+# honesty: a disable-user reporting success without disabling must NOT be
+# tracked (otherwise we would later "unfreeze" an app we never froze).
+printf 'u0_a1 123 456 com.lie.app\n' > "$T/ps.txt"
+$CLI add blacklist com.lie.app >/dev/null 2>&1 || true
+: > "$T/disabled.txt"; : > "$T/data/state/frozen.txt"
+printf 'android\ncom.android.systemui\ncom.android.settings\n' > "$T/data/state/.syspkgs"
+$CLI set default_profile 3 >/dev/null
+STUB_DISABLE_LIE=1 $CLI session-start com.test.game >/dev/null 2>&1
+if ! grep -qx 'com.lie.app' "$T/data/state/frozen.txt" 2>/dev/null && $CLI list logs | grep -q 'not-disabled-after-cmd'; then echo "PASS disable-lie not tracked"; pass=$((pass+1)); else echo "FAIL disable-lie not tracked"; fail=$((fail+1)); fi
+$CLI session-end >/dev/null 2>&1
+$CLI remove blacklist com.lie.app >/dev/null 2>&1
+$CLI set default_profile 2 >/dev/null
+: > "$T/disabled.txt"; : > "$T/data/state/frozen.txt"
+# fail-closed typing: with no system snapshot, user-type cannot be PROVED, so
+# freeze must skip instead of disabling (previously fail-open disabled them).
+mv "$T/data/state/.syspkgs" "$T/data/state/.syspkgs.keep" 2>/dev/null
+$CLI add blacklist com.evil.app >/dev/null 2>&1 || true
+printf 'u0_a1 123 456 com.evil.app\n' > "$T/ps.txt"
+: > "$T/pm.log"; : > "$T/data/state/frozen.txt"
+out=$($CLI set default_profile 3) >/dev/null; out=$($CLI set freeze_system false) >/dev/null
+out=$($CLI session-start com.test.game); out=$($CLI session-end) >/dev/null
+if ! grep -q 'disable-user' "$T/pm.log"; then echo "PASS type unknown skips freeze"; pass=$((pass+1)); else echo "FAIL type unknown skips freeze"; fail=$((fail+1)); fi
+printf 'android\ncom.android.systemui\ncom.android.settings\n' > "$T/data/state/.syspkgs"
+# NOTE: com.evil.app STAYS in the blacklist on purpose — the persistence tests
+# below (update keeps data / delink / canonical paths) assert it survives.
+out=$($CLI set default_profile 2) >/dev/null
+: > "$T/data/state/frozen.txt"
 # fgc PATH wrappers (FGC_MODULES override keeps this hermetic)
 mkdir -p "$T/adb"; cp -r "$M" "$T/adb/faagamecore"
 out=$(FGC_MODULES="$T/adb" bash "$M/system/bin/fgc" status)
@@ -367,6 +446,18 @@ if grep -q 'force-stop com.evil.app' "$T/am.log"; then echo "FAIL fail-closed cl
 fgc_freeze com.evil.app >/dev/null
 if grep -q 'disable-user.*com.evil.app' "$T/pm.log"; then echo "FAIL fail-closed freeze"; fail=$((fail+1)); else echo "PASS fail-closed freeze"; pass=$((pass+1)); fi
 mv "$T/whitelist.hide" "$T/data/config/whitelist.txt"
+# config list parser: comments, blank lines, '!disabled' markers, duplicates and
+# a MISSING file must all be handled deterministically (no crash, no wrong list).
+cp "$T/data/config/blacklist.txt" "$T/bl.save"
+printf '# comment line\n\ncom.a.app\n!com.b.app\ncom.a.app\n' > "$T/data/config/blacklist.txt"
+out=$($CLI list blacklist)
+if printf '%s\n' "$out" | grep -qx 'com.a.app' && printf '%s\n' "$out" | grep -qx '!com.b.app' && ! printf '%s\n' "$out" | grep -q 'comment'; then echo "PASS list parser comment/blank/disabled"; pass=$((pass+1)); else echo "FAIL list parser -- got: [$out]"; fail=$((fail+1)); fi
+if [ "$(printf '%s\n' "$out" | grep -c '^com\.a\.app$')" = "1" ]; then echo "PASS list parser dedupes"; pass=$((pass+1)); else echo "FAIL list parser dedupe -- got: [$out]"; fail=$((fail+1)); fi
+cp "$T/bl.save" "$T/data/config/blacklist.txt"
+mv "$T/data/config/whitelist.txt" "$T/wl.hide2"
+out=$($CLI list whitelist)
+if [ -z "$out" ]; then echo "PASS missing list -> empty"; pass=$((pass+1)); else echo "FAIL missing list -- got: [$out]"; fail=$((fail+1)); fi
+mv "$T/wl.hide2" "$T/data/config/whitelist.txt"
 
 echo "--- $pass pass, $fail fail ---"
 exit $fail

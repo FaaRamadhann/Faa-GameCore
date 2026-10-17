@@ -9,6 +9,28 @@ FGC_MODDIR="${FGC_MODDIR:-${0%/*}/..}"
 
 fgc_has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+fgc_selinux_mode() {
+  # enforcing|permissive|disabled|unknown — READ-ONLY. The module never changes
+  # SELinux state (no setenforce); this is reported so a policy-blocked operation
+  # is explained honestly instead of silently looking like a logic bug.
+  _e=""
+  [ -r /sys/fs/selinux/enforce ] && _e="$(cat /sys/fs/selinux/enforce 2>/dev/null)"
+  case "$_e" in
+    1) printf 'enforcing'; return 0 ;;
+    0) printf 'permissive'; return 0 ;;
+  esac
+  if fgc_has_cmd getenforce; then
+    case "$(getenforce 2>/dev/null)" in
+      Enforcing) printf 'enforcing' ;;
+      Permissive) printf 'permissive' ;;
+      Disabled) printf 'disabled' ;;
+      *) printf 'unknown' ;;
+    esac
+    return 0
+  fi
+  printf 'unknown'
+}
+
 fgc_detect_launcher() {
   # Best-effort current launcher package. Prints package or empty. Never fails hard.
   # File-based (no cmd|grep pipe): avoids early-exit pipe hazards on some runtimes.
@@ -54,6 +76,7 @@ fgc_detect_caps() {
   fi
   _pkg=none; [ "$_pm" = yes ] && _pkg=pm
   _kill=none; [ "$_am" = yes ] && _kill=am
+  _sel="$(fgc_selinux_mode 2>/dev/null)"; [ -n "$_sel" ] || _sel=unknown
   mkdir -p "$FGC_STATE"
   # system-package snapshot for profile policy (Balance = user-type only).
   # No early-exit pipes: pm output fully consumed, empty result removes stale data.
@@ -68,7 +91,7 @@ fgc_detect_caps() {
   _lc="$(fgc_detect_launcher)"
   if [ -n "$_lc" ]; then printf '%s\n' "$_lc" > "$FGC_STATE/protected_extra.txt"
   else : > "$FGC_STATE/protected_extra.txt"; fi
-  printf '{"pm":"%s","dumpsys":"%s","am":"%s","cmd":"%s","getprop":"%s","foreground":"%s","pkg_query":"%s","kill":"%s","launcher":"%s"}\n' \
-    "$_pm" "$_dumpsys" "$_am" "$_cmd" "$_getprop" "$_fg" "$_pkg" "$_kill" "$_lc" | tee "$FGC_STATE/caps.json" 2>/dev/null
+  printf '{"pm":"%s","dumpsys":"%s","am":"%s","cmd":"%s","getprop":"%s","foreground":"%s","pkg_query":"%s","kill":"%s","launcher":"%s","selinux":"%s"}\n' \
+    "$_pm" "$_dumpsys" "$_am" "$_cmd" "$_getprop" "$_fg" "$_pkg" "$_kill" "$_lc" "$_sel" | tee "$FGC_STATE/caps.json" 2>/dev/null
 }
 case "$0" in *caps.sh) fgc_detect_caps ;; esac
