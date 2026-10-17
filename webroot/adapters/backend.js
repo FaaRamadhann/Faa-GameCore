@@ -6,7 +6,10 @@
  *     moduleInfo() (= exact moduleDir, no hardcoded paths), toast(), mmrl().
  *     NOTE: WebUI X gates exec behind the SHELL permission — denial is
  *     surfaced honestly instead of silently falling back.
- *  2. window.kernelsu.exec   — KernelSU manager (Promise<{errno,stdout,stderr}> or string).
+ *     NOTE: the native Kitsune/Magisk/KernelSU bridge answers exec(cmd) with
+ *     ShellUtils.fastCmd = LAST LINE ONLY; multi-line reads must go through
+ *     exec(cmd, cbName). See nativeBridge() below.
+ *  2. window.kernelsu.exec   — KernelSU manager (same native bridge as (1)).
  *  3. window.magisk.exec / window.fgc.exec — other WebView hosts.
  * Fallback: LocalBackend (localStorage, honest "preview" badge, no fake apps).
  *
@@ -32,58 +35,83 @@
     }
   }
 
+  function pickOut(r) {
+    if (r == null) return "";
+    if (typeof r === "string") return r;
+    if (typeof r.stdout === "string") return r.stdout;
+    return String(r);
+  }
+
+  var execSeq = 0;
+
+  // Kitsune Mask / Magisk / KernelSU all expose the same native interface:
+  //   exec(cmd)          -> ShellUtils.fastCmd, which returns ONLY THE LAST LINE
+  //   exec(cmd, cbName)  -> the host calls cbName(code, stdout, stderr)
+  // Reading through the 1-arg form silently collapsed every multi-line answer:
+  // gamelist JSON became "}" (page empty), whitelist/blacklist showed their last
+  // entry only, and an 8-icon batch delivered 1 icon (letter avatars for the
+  // rest). Probe once, then always use the callback form when it answers.
+  function nativeBridge(name, obj, isWx) {
+    var br = { name: name, sync: true, ksu: obj, isWx: !!isWx, degraded: false };
+    var modeP = null;
+    function mode() {
+      if (modeP) return modeP;
+      modeP = new Promise(function (resolve) {
+        var id = "__fgcProbe" + (++execSeq);
+        var t = setTimeout(function () { clean(); resolve("sync"); }, 1500);
+        function clean() { try { delete window[id]; } catch (e) {} clearTimeout(t); }
+        window[id] = function (code, out) {
+          clean();
+          // Two lines came back => the callback form is honoured.
+          resolve(String(out || "").indexOf("\n") >= 0 ? "cb" : "sync");
+        };
+        try { obj.exec("printf 'fgc\\na\\n'", id); } catch (e) { clean(); resolve("sync"); }
+      });
+      return modeP;
+    }
+    function execCb(cmd) {
+      return new Promise(function (resolve, reject) {
+        var id = "__fgcExec" + (++execSeq);
+        var t = setTimeout(function () { clean(); reject(new Error("exec timeout")); }, 60000);
+        function clean() { try { delete window[id]; } catch (e) {} clearTimeout(t); }
+        window[id] = function (code, out, err) {
+          clean();
+          out = out == null ? "" : String(out);
+          // The CLI prints its own JSON errors on stdout; only a failure with no
+          // stdout at all is an exec error, and then the UI must say why.
+          if (!out && code !== 0) return reject(new Error(String(err || "").trim() || ("exit " + code)));
+          resolve(out);
+        };
+        try { obj.exec(cmd, id); } catch (e) { clean(); reject(e); }
+      });
+    }
+    br.exec = function (cmd) {
+      if (isWx) return toPromise(function () { return obj.exec(cmd); }).then(pickOut);
+      return mode().then(function (m) {
+        if (m === "sync") { br.degraded = true; return toPromise(function () { return obj.exec(cmd); }).then(pickOut); }
+        return execCb(cmd);
+      });
+    };
+    return br;
+  }
+
   function pickBridge() {
     try {
       if (typeof window.ksu !== "undefined" && window.ksu && typeof window.ksu.exec === "function") {
         var ksu = window.ksu, isWx = false;
         try { isWx = (typeof ksu.mmrl === "function") && !!ksu.mmrl(); } catch (e) { isWx = false; }
-        return {
-          name: isWx ? "ksu (WebUI X)" : "ksu",
-          sync: true, ksu: ksu, isWx: isWx,
-          exec: function (cmd) {
-            return toPromise(function () { return ksu.exec(cmd); }).then(function (r) {
-              if (r == null) return "";
-              if (typeof r === "string") return r;
-              if (typeof r.stdout === "string") return r.stdout;
-              return String(r);
-            });
-          }
-        };
+        return nativeBridge(isWx ? "ksu (WebUI X)" : "ksu", ksu, isWx);
       }
       if (typeof window.kernelsu !== "undefined" && window.kernelsu && typeof window.kernelsu.exec === "function") {
-        var kk = window.kernelsu;
-        return {
-          name: "kernelsu (KernelSU manager)", sync: false, ksu: null,
-          exec: function (cmd) {
-            return toPromise(function () { return kk.exec(cmd); }).then(function (r) {
-              if (r == null) return "";
-              if (typeof r === "string") return r;
-              if (typeof r.stdout === "string") return r.stdout;
-              return String(r);
-            });
-          }
-        };
+        return nativeBridge("kernelsu (KernelSU manager)", window.kernelsu, false);
       }
       if (typeof window.magisk !== "undefined" && window.magisk && typeof window.magisk.exec === "function") {
-        var m = window.magisk;
-        return { name: "magisk", sync: false, ksu: null, exec: function (cmd) {
-          return toPromise(function () { return m.exec(cmd); }).then(function (r) {
-            if (r == null) return "";
-            if (typeof r === "string") return r;
-            if (typeof r.stdout === "string") return r.stdout;
-            return String(r);
-          });
-        } };
+        return nativeBridge("magisk", window.magisk, false);
       }
       if (typeof window.fgc !== "undefined" && window.fgc && typeof window.fgc.exec === "function") {
         var f = window.fgc;
         return { name: "fgc", sync: false, ksu: null, exec: function (cmd) {
-          return toPromise(function () { return f.exec(cmd); }).then(function (r) {
-            if (r == null) return "";
-            if (typeof r === "string") return r;
-            if (typeof r.stdout === "string") return r.stdout;
-            return String(r);
-          });
+          return toPromise(function () { return f.exec(cmd); }).then(pickOut);
         } };
       }
     } catch (e) { /* probing must never throw */ }
@@ -334,7 +362,7 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.2.9",
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.3.0",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

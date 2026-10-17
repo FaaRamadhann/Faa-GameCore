@@ -124,6 +124,15 @@ check("btnIconProbe" in idx and "scheduleSweep" in app, "icon probe + IO fallbac
 check("refreshLight" in app and "loadPackages" in app and "scheduleRetry" in app and "debounce" in app, "perf: light refresh + lazy packages + retry + debounce")
 check("reconcile" in app and "terkonfirmasi" in app, "reconcile-on-error for switches")
 check("__fgcErr" in be, "bridge exec telemetry")
+# v1.3.0: the native Kitsune/Magisk/KernelSU bridge answers exec(cmd) with
+# ShellUtils.fastCmd = LAST LINE ONLY, which silently truncated gamelist JSON,
+# the whitelist/blacklist reads and 7 of every 8 icons. Multi-line reads must go
+# through exec(cmd, cbName); the probe falls back honestly when it is missing.
+check("nativeBridge" in be and "exec(cmd, id)" in be and "ShellUtils" in be,
+      "full-output bridge (exec with callback) instead of last-line fastCmd")
+check("br.degraded" in be and "degraded: false" in be, "1-line bridge reported as degraded")
+check("__fgcExec" in be and "__fgcProbe" in be, "callback exec + one-shot capability probe")
+check("(1-line bridge)" in app, "diagnostics shows a degraded bridge")
 _cl = (ROOT/"core/fgc-cli.sh").read_text(encoding="utf-8")
 check("whitelist-unreadable" in pm, "fail-closed cleanup+freeze")
 check("FGC_PROFILE" in (ROOT/"core/session_controller.sh").read_text(encoding="utf-8"), "profile passed to freeze")
@@ -157,11 +166,14 @@ check(not _gnu_bad, "posix grep/sed only" + ("" if not _gnu_bad else ": " + ",".
 check("protected_extra" in pe, "dynamic launcher protection")
 check("FGC_PROTECTED_BASE" in pe and "miui" not in pe.lower(), "universal protected base")
 # v1.2.4: config-faithful list rendering, honest pm toggling, read-only SELinux report
-# v1.2.9: the page IS the file. Rendering the whole installed universe made the
-# Gamelist/Whitelist/Blacklist pages look like they ignored the config (field
-# report). Installed apps may only appear while SEARCHING (candidates to add).
-check("if (r.member) return matchTerm(r, term)" in app and "return !!term && inTab" in app
-      and "page IS the file" in app, "list pages show exactly the config (search reveals apps to add)")
+# v1.2.9 tried "the page IS the file" (members only) and that hid the whole app
+# list, which users read as "my apps are gone". v1.3.0 restores the full universe:
+# configured entries ON, everything else OFF to add, and the type tab filters
+# EVERY row (members included) so "User App" / "System App" really differ.
+check("return inTab(r.pkg, state.tabGames) && matchTerm(r, term)" in app
+      and "return inTab(r.pkg, cfg[4]) && matchTerm(r, term)" in app
+      and "Full app list, always" in app,
+      "full app list rendered, type tab filters every row")
 check("Cari / tambah" in idx, "search-to-add hint")
 _caps_src = (ROOT/"core/caps.sh").read_text(encoding="utf-8")
 check("fgc_selinux_mode" in _caps_src and "getenforce" in _caps_src, "selinux mode detected (read-only)")

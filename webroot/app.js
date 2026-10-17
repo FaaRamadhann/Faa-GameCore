@@ -359,7 +359,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.2.9";
+  var UI_VERSION = "1.3.0";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -547,18 +547,17 @@
     var term = ($("qGames").value || "").toLowerCase();
     var members = state.games.map(function (g) { return { pkg: g.package, label: g.label, on: true, profile: g.profile || 0 }; });
     var rows = sortMembersFirst(universe(members, null).filter(function (r) {
-      // The page IS the file: only registered games are listed. Installed apps
-      // appear only while searching, as candidates to add — dumping the whole
-      // 400-app universe here made the page look like it ignored gamelist.json.
-      if (r.member) return matchTerm(r, term);
-      return !!term && inTab(r.pkg, state.tabGames) && matchTerm(r, term);
+      // Full app list, always: registered games ON at the top, everything else
+      // OFF so it can be added. The type tab filters EVERY row (members too),
+      // otherwise "System App" looked like it did nothing.
+      return inTab(r.pkg, state.tabGames) && matchTerm(r, term);
     }));
     if (!rows.length) {
       if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
-      var why = term ? "Tidak ada yang cocok di tab ini." : "Belum ada game — ketik nama game untuk mencari lalu tambahkan.";
+      var why = term ? "Tidak ada yang cocok di tab ini." : "Tidak ada aplikasi di tab ini.";
       if (!term && !state.games.length && !(state.pkgs || []).length) why = "Daftar aplikasi perangkat belum terbaca — tekan Refresh.";
       box.innerHTML = '<div class="empty"><div class="big">' +
-        (term ? "Tidak ada aplikasi" : "Gamelist kosong") + "</div>" +
+        (term ? "Tidak ada aplikasi" : "Tidak ada aplikasi di tab ini") + "</div>" +
         (backend.mode === "preview" && !state.games.length ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat." : why) + "</div>";
       return;
     }
@@ -591,20 +590,19 @@
       var box = $(cfg[0]); var term = ($(cfg[1]).value || "").toLowerCase();
       var members = cfg[2].map(function (x) { return { pkg: x.pkg, on: x.on }; });
       var rows = sortMembersFirst(universe(members, cfg[5]).filter(function (r) {
-        // Same rule as the Gamelist page: the list shown is exactly what the
-        // file contains. Installed apps surface only while searching (candidates
-        // to add), so the page can never misrepresent the config.
-        if (r.member) return matchTerm(r, term);
-        return !!term && inTab(r.pkg, cfg[4]) && matchTerm(r, term);
+        // Full app list, always: configured entries ON, the rest OFF so they can
+        // be added. The type tab filters EVERY row (members too) so "User App"
+        // and "System App" really differ.
+        return inTab(r.pkg, cfg[4]) && matchTerm(r, term);
       }));
       if (!rows.length) {
         if (box._sentObs) { try { box._sentObs.disconnect(); } catch (e) {} box._sentObs = null; }
         var why = term
           ? "Tidak ada aplikasi yang cocok dengan pencarian / tab ini."
-          : (members.length ? "Entri tidak cocok dengan tab ini." : "Belum ada entri — ketik nama aplikasi untuk mencari lalu tambahkan.");
+          : "Tidak ada aplikasi di tab ini.";
         if (!term && !members.length && !(state.pkgs || []).length) why = "Daftar aplikasi perangkat belum terbaca — tekan Refresh.";
         box.innerHTML = '<div class="empty"><div class="big">' +
-          (term ? "Tidak ada yang cocok" : "Daftar kosong") + "</div>" +
+          (term ? "Tidak ada yang cocok" : "Tidak ada aplikasi di tab ini") + "</div>" +
           (backend.mode === "preview" && !members.length
             ? "Mode pratinjau: buka WebUI dari aplikasi host untuk daftar aplikasi perangkat."
             : why) + "</div>";
@@ -820,7 +818,8 @@
         '<div class="kv"><span>Config games / white / black</span><b class="mono">' +
           esc((d.cfg_games == null ? "?" : d.cfg_games) + " / " + (d.cfg_white == null ? "?" : d.cfg_white) + " / " + (d.cfg_black == null ? "?" : d.cfg_black)) +
           " (core) &nbsp;vs&nbsp; " + esc(state.games.length + " / " + state.white.length + " / " + state.black.length) + " (UI)</b></div>" +
-        '<div class="kv"><span>Backend</span><b class="mono">' + esc(backend.mode) + "</b></div>";
+        '<div class="kv"><span>Backend</span><b class="mono">' + esc(backend.mode) +
+          (backend.bridge && backend.bridge.degraded ? " (1-line bridge)" : "") + "</b></div>";
     }).catch(function () { $("diagBox").innerHTML = '<div class="empty">Diagnostic gagal — backend tidak merespons.</div>'; });
   }
 
