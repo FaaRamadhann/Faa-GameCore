@@ -288,8 +288,25 @@ cmd_add() { # add <games|blacklist|whitelist> <package> [label...] [profile]
   esac
 }
 
-cmd_remove() { # remove <games|blacklist|whitelist> <package>
-  _t="$1"; _p="$2"
+cmd_remove() { # remove <games|blacklist|whitelist> <package> [package...]
+  _t="$1"; shift
+  [ "$#" -gt 0 ] || { echo '{"error":"invalid package"}'; return 1; }
+  case "$_t" in
+    blacklist|whitelist)
+      # Bulk form. A shell `for` loop cannot be passed through an `su -c`/adb
+      # wrapper (the wrapper splits the string, so the shell receives a bare
+      # `for`), and removing a dozen entries one call at a time is how users end
+      # up hand-editing the file. Accept the whole list in one call.
+      _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
+      _bad=""
+      for _p in "$@"; do
+        valid_pkg "$_p" || { _bad="$_bad $_p"; continue; }
+        _list_filter "$_f" "$_p" || _bad="$_bad $_p"
+      done
+      if [ -z "$_bad" ]; then echo '{"ok":true}'; return 0; fi
+      echo "{\"error\":\"remove-failed\",\"packages\":\"${_bad# }\"}"; return 1 ;;
+  esac
+  _p="$1"
   valid_pkg "$_p" || { echo '{"error":"invalid package"}'; return 1; }
   case "$_t" in
     games)
@@ -307,9 +324,6 @@ cmd_remove() { # remove <games|blacklist|whitelist> <package>
       else
         rm -f "$_dump" "$_dump.2" 2>/dev/null; echo '{"error":"remove-failed"}'; return 1
       fi ;;
-    blacklist|whitelist)
-      _f="$FGC_CONFIG/$([ "$_t" = blacklist ] && echo blacklist.txt || echo whitelist.txt)"
-      _list_filter "$_f" "$_p" && echo '{"ok":true}' || echo '{"error":"remove-failed"}' ;;
     *) echo '{"error":"unknown target"}'; return 1 ;;
   esac
 }

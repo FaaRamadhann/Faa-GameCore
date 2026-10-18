@@ -466,6 +466,20 @@ out=$($CLI session-start com.test.game); out=$($CLI session-end) >/dev/null
 if ! grep -q 'disable-user.*com.pre.disabled' "$T/pm.log" && ! grep -qx 'com.pre.disabled' "$T/data/state/frozen.txt" 2>/dev/null; then echo "PASS predisable respected"; pass=$((pass+1)); else echo "FAIL predisable respected"; fail=$((fail+1)); fi
 if ! grep -q 'enable.*com.pre.disabled' "$T/pm.log"; then echo "PASS predisable not enabled"; pass=$((pass+1)); else echo "FAIL predisable not enabled"; fail=$((fail+1)); fi
 out=$($CLI remove blacklist com.pre.disabled) >/dev/null; : > "$T/disabled.txt"
+# Bulk remove: a shell `for` loop cannot survive an `su -c`/adb wrapper (the
+# wrapper splits the string, so the shell receives a bare `for`), so removing a
+# dozen entries must be one call. Valid names are applied even when the batch
+# reports a bad one; the failure must be loud, never silent.
+$CLI add blacklist com.bulk.a >/dev/null; $CLI add blacklist com.bulk.b >/dev/null; $CLI add blacklist com.bulk.c >/dev/null
+out=$($CLI remove blacklist com.bulk.a com.bulk.b com.bulk.c)
+ck "bulk remove ok" '{"ok":true}' "$out"
+if ! grep -q 'com.bulk' "$T/data/config/blacklist.txt" 2>/dev/null; then echo "PASS bulk remove cleared all 3"; pass=$((pass+1)); else echo "FAIL bulk remove left: $(grep com.bulk "$T/data/config/blacklist.txt" | tr '\n' ' ')"; fail=$((fail+1)); fi
+$CLI add blacklist com.bulk.d >/dev/null
+out=$($CLI remove blacklist com.bulk.d 'bad name!')
+ck "bulk remove reports bad name" '"error":"remove-failed"' "$out"
+if ! grep -qx 'com.bulk.d' "$T/data/config/blacklist.txt" 2>/dev/null; then echo "PASS bulk remove applied valid names despite bad one"; pass=$((pass+1)); else echo "FAIL bulk remove skipped valid names"; fail=$((fail+1)); fi
+out=$($CLI remove blacklist)
+ck "remove needs a package" '"error":"invalid package"' "$out"
 : > "$T/pm.log"
 out=$($CLI set default_profile 1) >/dev/null
 out=$($CLI session-start com.test.game); out=$($CLI session-end) >/dev/null
