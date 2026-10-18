@@ -3,7 +3,7 @@
 MODDIR=${0%/*}
 
 ui_print "- Faa GameCore installing..."
-mkdir -p "$MODDIR/config" "$MODDIR/state" "$MODDIR/logs" "$MODDIR/core" "$MODDIR/webroot" "$MODDIR/tools"
+mkdir -p "$MODDIR/config" "$MODDIR/state" "$MODDIR/logs" "$MODDIR/core" "$MODDIR/webroot" "$MODDIR/bin"
 
 # Seed default configs only if missing (never overwrite user config on update)
 for f in config.json gamelist.json blacklist.txt whitelist.txt; do
@@ -39,7 +39,6 @@ else
 fi
 
 set_perm_recursive "$MODDIR/core" 0 0 0755 0755
-set_perm_recursive "$MODDIR/tools" 0 0 0755 0755
 set_perm "$MODDIR/service.sh" 0 0 0755
 set_perm "$MODDIR/action.sh" 0 0 0755
 set_perm "$MODDIR/uninstall.sh" 0 0 0755

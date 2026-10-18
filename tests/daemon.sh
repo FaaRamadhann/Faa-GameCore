@@ -90,7 +90,12 @@ _p2=$(cat "$T/data/state/daemon.lock/pid" 2>/dev/null)
 if [ -n "$_p1" ] && [ -n "$_p2" ] && [ "$_p1" != "$_p2" ]; then echo "PASS core restarted after crash"; pass=$((pass+1)); else echo "FAIL core restarted after crash (p1=$_p1 p2=$_p2)"; fail=$((fail+1)); fi
 # the stale lock left by kill -9 must be reclaimed, not treated as a live daemon
 kill -9 "$_p2" 2>/dev/null
-wait $SUP 2>/dev/null
+# Bounded wait: a bare `wait $SUP` hangs forever if the supervisor starts one
+# more cycle than expected (seen once: the run stopped here and never resumed).
+_wt=0
+while kill -0 "$SUP" 2>/dev/null && [ "$_wt" -lt 60 ]; do _wt=$((_wt+1)); sleep 1; done
+kill -9 "$SUP" 2>/dev/null
+wait "$SUP" 2>/dev/null
 rm -rf "$T/data/state/daemon.lock" 2>/dev/null
 unset FGC_SUPERVISE_MAX
 export FGC_MAX_ITER=1
@@ -162,10 +167,20 @@ for _p in $(ps -ef 2>/dev/null | grep 'core/main.sh' | grep -v grep | awk '{prin
 sleep 2
 rm -rf "$T/data/state/daemon.lock"
 i=0
-while [ "$i" -lt 5 ]; do i=$((i+1)); bash "$M/core/main.sh" "$M" >/dev/null 2>&1 & done
+while [ "$i" -lt 5 ]; do i=$((i+1)); bash "$M/core/main.sh" "$M" > "$T/c$i.log" 2>&1 & done
 sleep 8
-_dn=$(ps -ef 2>/dev/null | grep 'core/main.sh' | grep -v grep | wc -l | tr -d ' ')
-if [ "$_dn" = "1" ]; then echo "PASS concurrent starts leave one daemon"; pass=$((pass+1)); else echo "FAIL concurrent starts (daemons=$_dn)"; fail=$((fail+1)); fi
+# Assert the CONTRACT, not a `ps` line count: every loser must say so. Counting
+# `ps | grep core/main.sh` is unreliable — a daemon's $(...) fork keeps main.sh's
+# argv until it execs, so a busy poll cycle counts as extra daemons (measured:
+# 1 real daemon reported as 7).
+_lost=0
+for _f in "$T"/c*.log; do grep -q 'already running' "$_f" && _lost=$((_lost+1)); done
+_lp=$(cat "$T/data/state/daemon.lock/pid" 2>/dev/null)
+if [ "$_lost" = "4" ] && [ -n "$_lp" ] && tr '\0' ' ' < "/proc/$_lp/cmdline" 2>/dev/null | grep -q 'core/main.sh'; then
+  echo "PASS concurrent starts leave one daemon"; pass=$((pass+1))
+else
+  echo "FAIL concurrent starts (losers=$_lost/4 lockpid=$_lp)"; fail=$((fail+1))
+fi
 for _p in $(ps -ef 2>/dev/null | grep 'core/main.sh' | grep -v grep | awk '{print $2}'); do kill -9 "$_p" 2>/dev/null; done
 rm -rf "$T/data/state/daemon.lock"
 # 9. "Restart core" must converge to exactly one supervisor + one daemon, every
@@ -182,7 +197,7 @@ settle() {
   while [ "$_i" -lt 60 ]; do
     _sp=$(cat "$T/data/state/supervise.lock/pid" 2>/dev/null)
     _d=$(cat "$T/data/state/daemon.lock/pid" 2>/dev/null)
-    if [ -n "$_sp" ] && [ -n "$_d" ] \
+    if [ -n "$_sp" ] && [ -n "$_d" ] && [ -r "/proc/$_sp/cmdline" ] && [ -r "/proc/$_d/cmdline" ] \
        && tr '\0' ' ' < "/proc/$_sp/cmdline" 2>/dev/null | grep -q 'core/supervise.sh' \
        && tr '\0' ' ' < "/proc/$_d/cmdline" 2>/dev/null | grep -q 'core/main.sh'; then
       [ "$(ps -ef | awk -v p="$_sp" '$3==p' | grep -c 'core/main.sh')" = "1" ] && return 0

@@ -7,21 +7,24 @@ APP_NAME = "faagamecore"
 REQUIRED = ["module.prop", "customize.sh", "uninstall.sh", "service.sh", "action.sh",
             "META-INF/com/google/android/update-binary",
             "META-INF/com/google/android/updater-script",
-            "system/bin/fgc", "system/bin/fgc-cli", "build.py",
-            "core/main.sh", "core/fgc-cli.sh", "core/caps.sh", "core/device.sh",
-            "core/str.sh", "core/data_init.sh", "core/gamelist.sh", "webroot/index.html"]
+            "system/bin/fgc", "system/bin/fgc-cli", "bin/fgc-pm.dex",
+            "config/config.json", "config/gamelist.json",
+            "config/blacklist.txt", "config/whitelist.txt",
+            "webroot/index.html", "webroot/app.js", "webroot/style.css",
+            "webroot/adapters/backend.js"]
 EXECUTABLES = {"customize.sh", "uninstall.sh", "service.sh", "action.sh",
                "META-INF/com/google/android/update-binary",
-               "system/bin/fgc", "system/bin/fgc-cli",
-               "core/main.sh", "core/fgc-cli.sh", "core/caps.sh", "core/device.sh",
-               "core/event_detector.sh",
-               "core/foreground_monitor.sh", "core/session_controller.sh",
-               "core/policy_engine.sh", "core/process_manager.sh",
-               "core/config_manager.sh", "core/logger.sh", "core/recovery.sh",
-               "core/supervise.sh", "tools/version.sh"}
-EXCLUDE_DIRS = {"temp", "__pycache__", ".git", "build", "tests/__pycache__"}
-EXCLUDE_FILES = {".DS_Store", "Thumbs.db"}
+               "system/bin/fgc", "system/bin/fgc-cli"}
+# What ships is the module, nothing else. Dev-only trees (tests/tools/docs) and
+# build inputs must never reach the zip: they are dead weight on the device and
+# the Magisk installer has no use for them.
+EXCLUDE_DIRS = {"temp", "tests", "tools", "docs", "build", "__pycache__", ".git",
+                ".github", "logs", "state"}
+EXCLUDE_FILES = {".DS_Store", "Thumbs.db", ".gitignore", ".gitattributes",
+                 "build.py", "README.md"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".zip"}
+# Guard: everything under these trees is runtime code and MUST be in the zip.
+KEEP_DIRS = ("core", "webroot", "config", "system", "bin", "META-INF")
 ROOT = pathlib.Path(__file__).resolve().parent.parent if pathlib.Path(__file__).name == "build.py" and pathlib.Path(__file__).parent.name == "tools" else pathlib.Path(__file__).resolve().parent
 
 def read_version(d):
@@ -37,6 +40,12 @@ def skip(p, base):
         if p.name in EXCLUDE_FILES or p.suffix in EXCLUDE_SUFFIXES: return True
     return False
 
+def mode_of(arc, is_dir):
+    """0755 for anything the device executes, 0644 otherwise."""
+    if is_dir or arc in EXECUTABLES: return 0o755
+    if arc.startswith("core/") and arc.endswith(".sh"): return 0o755
+    return 0o644
+
 def build(mod, out):
     missing = [f for f in REQUIRED if not (mod / f).exists()]
     if missing: sys.exit("File wajib hilang: " + ", ".join(missing))
@@ -49,11 +58,18 @@ def build(mod, out):
             arc = path.relative_to(mod).as_posix()
             zi = zipfile.ZipInfo(filename=arc + ("/" if path.is_dir() else ""))
             zi.compress_type = zipfile.ZIP_DEFLATED
-            zi.external_attr = ((0o755 if (path.is_dir() or arc in EXECUTABLES) else 0o644) << 16) | (0x10 if path.is_dir() else 0)
+            zi.external_attr = (mode_of(arc, path.is_dir()) << 16) | (0x10 if path.is_dir() else 0)
             zf.writestr(zi, b"" if path.is_dir() else path.read_bytes())
     with zipfile.ZipFile(out) as zf:
-        bad = [n for n in zf.namelist() if "\\" in n]
+        names = set(zf.namelist())
+        bad = [n for n in names if "\\" in n]
         if bad: sys.exit("ZIP cacat: %s" % bad[:5])
+        # A too-broad exclude must fail the build, not ship a module that boots
+        # into "core file missing" on a user's phone.
+        lost = [p.relative_to(mod).as_posix() for d in KEEP_DIRS
+                for p in (mod / d).rglob("*") if p.is_file()
+                and p.relative_to(mod).as_posix() not in names]
+        if lost: sys.exit("ZIP kehilangan file runtime: " + ", ".join(lost[:5]))
     return out
 
 def main(argv=None):
