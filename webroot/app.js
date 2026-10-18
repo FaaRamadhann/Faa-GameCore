@@ -91,20 +91,21 @@
     chip.className = "chip";
     if (!s) { tx.textContent = "Memuat…"; return; }
     // Stale-WebView guard: a WebView kept alive across a module update runs
-    // OLD js against NEW backend (or vice versa) and shows wrong lists.
-    // Refuse to render instead of lying.
+    // OLD js against NEW backend (or vice versa) and can show wrong lists.
+    // WARN, but keep rendering: this used to `return`, which left the user with
+    // a dead screen and no Restart core / Diagnostics to recover with — the one
+    // situation where those buttons are needed most. The backend is the source
+    // of truth for every list anyway; only the UI shell can be stale.
     if (backend.mode === "device" && s.version && s.version !== UI_VERSION) {
-      tx.textContent = "VERSION MISMATCH";
       chip.classList.add("err");
       toast("WebUI v" + UI_VERSION + " vs backend v" + s.version + " — tutup WebUI sepenuhnya lalu buka ulang.", "err");
-      return;
     }
     var map = { ACTIVE: "ok", STARTING: "info", DISABLED: "warn", STOPPED: "warn", ERROR: "err" };
     chip.classList.add(map[s.core] || "info");
     tx.textContent = "STATUS: " + s.core;
-    $("chipVer").textContent = "v" + (s.version || "1.0.0");
+    $("chipVer").textContent = "v" + (s.version || UI_VERSION);
     $("chipProf").textContent = "PROFILE: " + profileName(s.profile);
-    $("devVer").textContent = "v" + (s.version || "1.0.0");
+    $("devVer").textContent = "v" + (s.version || UI_VERSION);
     var d = s.device || {};
     $("devModel").textContent = d.model || "Unknown";
     $("devSub").textContent = (d.manufacturer || "Unknown") + " • Android " + (d.android || "Unknown");
@@ -359,7 +360,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.3.2";
+  var UI_VERSION = "1.3.4";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {

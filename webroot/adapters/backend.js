@@ -362,7 +362,9 @@
   LocalBackend.prototype._save = function () { try { localStorage.setItem(LS, JSON.stringify(this.d)); } catch (e) {} };
   LocalBackend.prototype.status = function () {
     var en = this.d.config.enabled;
-    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "1.3.2",
+    // No version here: the UI falls back to its own UI_VERSION. A second
+    // hardcoded copy is exactly what drifted and showed a stale number.
+    return Promise.resolve({ core: en ? "ACTIVE" : "DISABLED", daemon_running: en, enabled: en, game: "", profile: this.d.config.default_profile, last_cleanup: this.d.logs.length ? "preview session - no device cleanup" : "", version: "",
       device: { manufacturer: "Unknown", model: "Unknown", android: "Unknown", sdk: "Unknown", root: "Not detected" } });
   };
   LocalBackend.prototype.listGames = function () { return Promise.resolve(this.d.games.slice()); };

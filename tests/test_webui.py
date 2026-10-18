@@ -36,6 +36,25 @@ _allow = set(re.findall(r'"?([A-Za-z-]+)"?:\s*1', re.search(r"var ALLOW = \{(.*?
 _called = set(re.findall(r'_run\("([a-z-]+)', be))
 check(_called <= _allow, "allowlist covers adapter calls" + ("" if _called <= _allow else " missing " + ",".join(sorted(_called - _allow))))
 check("eval(" not in app and "eval(" not in be, "no eval in webui")
+# A version-mismatch guard must WARN, not blank the screen: it used to `return`
+# before rendering, so a stale WebUI showed only "VERSION MISMATCH" with no
+# Restart core / Diagnostics to recover with — a dead end for the user.
+_mism = re.search(r'if \(backend\.mode === "device".*?s\.version !== UI_VERSION\) \{(.*?)\n    \}', app, re.S)
+check(_mism is not None, "version mismatch guard present")
+check(_mism is not None and "return" not in _mism.group(1), "mismatch guard warns instead of blanking the UI")
+# One source of truth for the version on the UI side; version.sh bumps it.
+check(len(re.findall(r'var UI_VERSION = "[0-9.]+"', app)) == 1, "single UI_VERSION constant")
+# And it must MATCH the module version right now: a release that bumps
+# module.prop but forgets app.js ships a UI that greets every user with a
+# mismatch warning. (v1.3.3 did exactly that.)
+_prop = (ROOT/"module.prop").read_text(encoding="utf-8")
+_pver = re.search(r"^version=(.+)$", _prop, re.M).group(1).strip()
+_pcode = re.search(r"^versionCode=(.+)$", _prop, re.M).group(1).strip()
+_uver = re.search(r'var UI_VERSION = "([0-9.]+)"', app).group(1)
+_qver = re.search(r"app\.js\?v=(\d+)", idx)
+check(_uver == _pver, "UI_VERSION matches module.prop (" + _uver + " vs " + _pver + ")")
+check(_qver is not None and _qver.group(1) == _pcode, "index.html cache-buster matches versionCode")
+check(not re.search(r'version: "\d+\.\d+\.\d+"', be), "no hardcoded version in backend.js")
 # App labels are FREE TEXT from the package manager ("Picsart AI Photo Editor,
 # Video (PicsArt)", "Clean & Boost", "Faa's Game"). The adapter used to build
 # the CLI command by concatenation, so "(" killed the shell and the add failed
