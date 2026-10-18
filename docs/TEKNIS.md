@@ -69,7 +69,12 @@ Unfreeze tahan-gagal: `pm enable` diulang, dan bila tetap gagal entry **disimpan
 
 1. **Jurnal ditulis sebelum disable** — `frozen.txt` diisi *sebelum* `pm disable-user`. `disable-user` itu persisten, jadi crash di antara perintah dan pencatatan dulu meninggalkan app disabled **tanpa jejak**. Sekarang urutannya write-ahead; kalau disable ternyata gagal, entry dihapus lagi.
 2. **Core dijaga tetap hidup** oleh `core/supervise.sh` (dijalankan `service.sh` di latar belakang): restart ~10 detik bila daemon mati/crash. Daemon adalah satu-satunya yang meng-unfreeze saat game ditutup. Restart saat game masih jalan tidak meng-unfreeze apa pun (`recovery.sh` melewati unfreeze bila `session.lock` masih hidup).
+   - **Satu supervisor saja**: `supervise.lock` berisi PID yang divalidasi lewat `/proc/<pid>/cmdline`, dan hanya pemilik lock yang menghapusnya (supervisor lama yang telat keluar tidak boleh menghapus lock milik yang baru).
+   - **Restart core = ganti daemon, bukan ganti supervisor.** Kalau supervisor hidup, `service.sh` hanya membunuh daemon; supervisor menghidupkannya lagi dari file di disk. Mengganti supervisor tiap restart dulu meninggalkan supervisor ganda (supervisor bisa mem-fork daemon tepat setelah sapuan yang menyimpulkan ia sudah mati).
+   - **Kode baru tetap terpakai setelah update**: daemon baru memeriksa `core.epoch` (ditulis `service.sh`) dan pensiun sendiri bila sudah disusupi epoch baru, sehingga daemon yang telat mati (TERM tertunda saat di dalam `pm`/`dumpsys`) tidak berjalan berdampingan. `supervise.sh` membandingkan `mtime+size` dirinya dan `exec` dirinya sendiri bila file berubah (PID & lock dipertahankan).
 3. **Titik pemulihan lain** — akhir sesi, `recovery.sh` saat boot, `status` WebUI (bila daemon mati), dan `set enabled false`. Semua jujur: kalau enable tidak terbukti, entry tetap disimpan untuk dicoba lagi (throttle 1×/menit supaya tidak jadi badai `pm`).
+   - **Disable yang mendarat terlambat.** Daemon yang di-`SIGKILL` (LMK, atau user menghentikan paksa) saat freeze bisa meninggalkan `pm disable-user` yang masih di jalan. Disable itu mendarat *setelah* pass unfreeze selesai — entry sudah dipensiunkan karena app masih terlihat enabled — sehingga app disabled dengan jurnal **kosong**: satu-satunya keadaan tanpa jalan pulih. `recovery.sh` menyimpan salinan entry yang akan dipensiunkan, lalu menjalankan pass unfreeze yang sama sekali lagi setelah sistem tenang (2 detik). Pass kedua itu idempoten: app yang memang enabled dipensiunkan lagi, paket yang hilang tetap dipensiunkan, dan disable yang telat dibatalkan.
+4. **`status` dan `diag` ditulis pretty** (satu key per baris, indentasi 4 spasi) karena dibaca manusia di terminal; WebUI tetap `JSON.parse` byte yang sama. Sub-objek `device`/`caps` dilayout satu key per baris oleh helper `jbody` — nilainya scalar yang sudah disanitasi (tanpa kutip, koma, newline), jadi pemisahan per koma eksak.
 
 Lock `session.lock` divalidasi lewat `/proc/<pid>/cmdline`, jadi PID yang sudah dipakai proses lain tidak dianggap sesi hidup.
 
@@ -86,7 +91,7 @@ Lock `session.lock` divalidasi lewat `/proc/<pid>/cmdline`, jadi PID yang sudah 
 
 ## Status & daemon
 
-Status jujur tanpa PID file: `daemon.lock` = daemon hidup; `STARTING` = boot belum selesai; `ERROR` = ada `CORE_ERROR` di 20 baris log terakhir. Tombol **Restart core** di Diagnostics menjalankan ulang `service.sh` (idempoten). `service.sh` langsung kembali, jadi bridge WebUI tidak menggantung; supervisor hidup di `core/supervise.sh`.
+Status jujur tanpa PID file: `daemon.lock` = daemon hidup; `STARTING` = boot belum selesai; `ERROR` = ada `CORE_ERROR` di 20 baris log terakhir. Tombol **Restart core** di Diagnostics menjalankan ulang `service.sh`; bila supervisor masih hidup ia hanya mengganti daemon (kode di disk langsung dipakai), dan bila tidak ada supervisor ia memulai satu. `service.sh` langsung kembali, jadi bridge WebUI tidak menggantung; supervisor hidup di `core/supervise.sh`.
 
 ## Universal compatibility
 

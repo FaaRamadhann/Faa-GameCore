@@ -15,7 +15,8 @@ fgc_battery_pct() {
     ''|*[!0-9]*) ;;
     *) [ "$_c" -ge 0 ] 2>/dev/null && [ "$_c" -le 100 ] 2>/dev/null && { printf '%s' "$_c"; return 0; } ;;
   esac
-  _l="$(dumpsys battery 2>/dev/null | grep -m1 'level:' | grep -o '[0-9][0-9]*' | head -n1)"
+  # stdin from /dev/null: dumpsys (app_process) fails when stdin is a file.
+  _l="$(dumpsys battery < /dev/null 2>/dev/null | grep -m1 'level:' | grep -o '[0-9][0-9]*' | head -n1)"
   case "$_l" in
     ''|*[!0-9]*) return 1 ;;
     *) [ "$_l" -le 100 ] 2>/dev/null && { printf '%s' "$_l"; return 0; } || return 1 ;;
@@ -49,10 +50,11 @@ fgc_device_json() {
     _p="$(fgc_prop ro.build.version.sdk)";     [ -n "$_p" ] && _sdk="$_p"
   fi
   _root="$(fgc_root_manager)"
-  # sanitize quotes/newlines
-  _man="$(printf '%s' "$_man" | tr -d '\n\r"')"; _mod="$(printf '%s' "$_mod" | tr -d '\n\r"')"
-  _and="$(printf '%s' "$_and" | tr -d '\n\r"')"; _sdk="$(printf '%s' "$_sdk" | tr -d '\n\r"')"
-  _root="$(printf '%s' "$_root" | tr -d '\n\r"')"
+  # sanitize quotes/newlines/commas: these are display values, and a comma would
+  # split the field when the pretty printer lays the object out one key per line.
+  _man="$(printf '%s' "$_man" | tr -d '\n\r",')"; _mod="$(printf '%s' "$_mod" | tr -d '\n\r",')"
+  _and="$(printf '%s' "$_and" | tr -d '\n\r",')"; _sdk="$(printf '%s' "$_sdk" | tr -d '\n\r",')"
+  _root="$(printf '%s' "$_root" | tr -d '\n\r",')"
   printf '{"manufacturer":"%s","model":"%s","android":"%s","sdk":"%s","root":"%s"}' \
     "$_man" "$_mod" "$_and" "$_sdk" "$_root"
 }

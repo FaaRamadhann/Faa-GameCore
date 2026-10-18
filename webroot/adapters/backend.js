@@ -304,7 +304,7 @@
   };
   DeviceBackend.prototype.diag = function () { return this._run("diag").then(JSON.parse); };
   DeviceBackend.prototype.restartService = function () {
-    // service.sh is idempotent (single-instance guard in main.sh): safe anytime.
+    // service.sh replaces the running core (old code included) and returns.
     return this.bridge.exec("sh \"" + this.moddir + "/service.sh\"; echo started").then(function (r) {
       return { ok: true, out: String(r || "") };
     });

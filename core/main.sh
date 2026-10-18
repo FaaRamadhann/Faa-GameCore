@@ -22,18 +22,37 @@ fgc_daemon_alive() {
   _dpid="$(cat "$LOCKDIR/pid" 2>/dev/null)"
   [ -n "$_dpid" ] || return 1
   case "$_dpid" in *[!0-9]*) return 1 ;; esac
-  if tr '\0' ' ' < "/proc/$_dpid/cmdline" 2>/dev/null | grep -q 'core/main.sh'; then return 0; fi
+  if [ -r "/proc/$_dpid/cmdline" ] && tr '\0' ' ' < "/proc/$_dpid/cmdline" | grep -q 'core/main.sh'; then return 0; fi
   return 1
 }
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
-  if fgc_daemon_alive; then
-    echo "FGC already running"; exit 0
-  fi
-  rm -rf "$LOCKDIR" 2>/dev/null
-  mkdir "$LOCKDIR" 2>/dev/null || { echo "FGC lock busy"; exit 0; }
+  # A starter may have created the dir and not yet written its pid. Treating
+  # that window as "stale" made TWO starters both win (each rm -rf'd the other's
+  # lock) and left several daemons polling the same state forever — observed
+  # on-device as 5 concurrent main.sh. Wait for the pid before deciding — but a
+  # pid that IS written and dead is definitively stale, so reclaim it at once.
+  _try=0
+  while :; do
+    if fgc_daemon_alive; then
+      echo "FGC already running"; exit 0
+    fi
+    if [ -s "$LOCKDIR/pid" ]; then _try=99; fi
+    _try=$((_try+1))
+    if [ "$_try" -gt 6 ]; then
+      rm -rf "$LOCKDIR" 2>/dev/null
+      mkdir "$LOCKDIR" 2>/dev/null && break
+      echo "FGC lock busy"; exit 0
+    fi
+    sleep 1
+  done
 fi
 printf '%s' "$$" > "$LOCKDIR/pid" 2>/dev/null
-trap 'rm -rf "$LOCKDIR" 2>/dev/null; exit 0' TERM INT
+# Only remove the lock if it is still OURS: a daemon that exits late must not
+# delete the lock a freshly started daemon already owns.
+_d_cleanup() {
+  [ "$(cat "$LOCKDIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCKDIR" 2>/dev/null
+}
+trap '_d_cleanup; exit 0' TERM INT
 
 sh "$CORE_DIR/recovery.sh" >/dev/null 2>&1 || true
 # capability snapshot for diagnostics + degraded-mode decision
@@ -49,7 +68,16 @@ fgc_log "SESSION_STARTED" "" "daemon" "core-started" ""
 # Production is unaffected; tests set e.g. FGC_MAX_ITER=3 for a bounded run
 # with clean lock release, proving start/stop/single-instance behavior.
 _n=0
+# Restart epoch: service.sh rewrites this on every "Restart core"/boot start. A
+# daemon that outlived the restart (deferred signal while inside a long pm call)
+# retires here instead of polling alongside the new one.
+_ep="$(cat "$FGC_STATE/core.epoch" 2>/dev/null)"
+if [ -z "$_ep" ]; then _ep="$$"; printf '%s' "$_ep" > "$FGC_STATE/core.epoch" 2>/dev/null; fi
 while true; do
+  if [ "$(cat "$FGC_STATE/core.epoch" 2>/dev/null)" != "$_ep" ]; then
+    fgc_log "SESSION_ENDED" "" "daemon" "retired-superseded" ""
+    break
+  fi
   _int="$(fgc_cfg_get poll_interval_sec)"; [ -n "$_int" ] || _int=3
   _res="$(fgc_detect_once)"
   case "$_res" in
@@ -67,4 +95,4 @@ while true; do
   if [ "${FGC_MAX_ITER:-0}" -gt 0 ] 2>/dev/null && [ "$_n" -ge "$FGC_MAX_ITER" ]; then break; fi
   sleep "$_int"
 done
-rm -rf "$LOCKDIR" 2>/dev/null
+_d_cleanup

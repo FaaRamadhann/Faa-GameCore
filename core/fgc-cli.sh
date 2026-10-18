@@ -14,6 +14,20 @@ CORE_DIR="$MODDIR/core"
 . "$CORE_DIR/gamelist.sh"
 
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n\r\t'; }
+# jbody <indent> <compact object> -> one `"k":v` per line, no trailing comma.
+# For the flat scalar objects we emit (device, caps) a split on ',' is exact:
+# every value is quote-sanitised and none can contain a comma or a brace.
+# ponytail: a value with a comma needs a real parser; none of ours can have one.
+jbody() {
+  printf '%s\n' "$2" | awk -v i="$1" '{
+    sub(/^[ \t]*\{/, ""); sub(/\}[ \t]*$/, "")
+    n = split($0, a, ",")
+    for (k = 1; k <= n; k++) {
+      gsub(/^[ \t]+/, "", a[k])
+      printf "%s%s%s\n", i, a[k], (k < n ? "," : "")
+    }
+  }'
+}
 
 _glist_ensure() {
   # Guarantee a usable gamelist.json: heal missing/corrupt files (backup +
@@ -144,8 +158,17 @@ cmd_status() {
   _lc="$(printf '%s' "$_sj" | grep -o '"last_cleanup"[ ]*:[ ]*"[^"]*"' | cut -d'"' -f4)"
   _ver="$(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2)"
   _dev="$(fgc_device_json 2>/dev/null)"; [ -n "$_dev" ] || _dev='{"manufacturer":"Unknown","model":"Unknown","android":"Unknown","sdk":"Unknown","root":"Not detected"}'
-  printf '{"core":"%s","daemon_running":%s,"enabled":%s,"game":"%s","profile":%s,"last_cleanup":"%s","version":"%s","device":%s}\n' \
-    "$_core" "$_run" "$([ "$_en" = "false" ] && echo false || echo true)" "$(jesc "$_game")" "${_prof:-1}" "$(jesc "$_lc")" "$(jesc "$_ver")" "$_dev"
+  printf '{\n'
+  printf '    "core":"%s",\n' "$_core"
+  printf '    "daemon_running":%s,\n' "$_run"
+  printf '    "enabled":%s,\n' "$([ "$_en" = "false" ] && echo false || echo true)"
+  printf '    "game":"%s",\n' "$(jesc "$_game")"
+  printf '    "profile":%s,\n' "${_prof:-1}"
+  printf '    "last_cleanup":"%s",\n' "$(jesc "$_lc")"
+  printf '    "version":"%s",\n' "$(jesc "$_ver")"
+  printf '    "device":{\n'
+  jbody '        ' "$_dev"
+  printf '    }\n}\n'
 }
 
 cmd_list() { # list [games|blacklist|whitelist|logs|config|packages] (bare = games)
@@ -191,7 +214,7 @@ cmd_list() { # list [games|blacklist|whitelist|logs|config|packages] (bare = gam
       fgc_snap "$_sysf" pm list packages -s
       sed 's/^package://' "$_sysf" 2>/dev/null | sort -u > "$_sysf.n" 2>/dev/null
       mv "$_sysf.n" "$_sysf" 2>/dev/null
-      pm list packages 2>/dev/null | sed 's/^package://' | sort -u | while IFS= read -r p; do
+      pm list packages < /dev/null 2>/dev/null | sed 's/^package://' | sort -u | while IFS= read -r p; do
         [ -n "$p" ] || continue
         if grep -qx "$p" "$_sysf" 2>/dev/null; then _t=system; else _t=user; fi
         case "$_which" in all) ;; "$_t") ;; *) continue ;; esac
@@ -573,7 +596,22 @@ cmd_diag() {
   # Frozen entries still waiting to be re-enabled. Non-zero outside a session is
   # the "session ended but apps still disabled" state; the WebUI drains it.
   _nf=0; _nf="$(grep -c . "$FGC_STATE/frozen.txt" 2>/dev/null)"; [ -n "$_nf" ] || _nf=0
-  printf '{"commands":"%s","session_lock":"%s","files":"%s","boot_completed":"%s","icons_cached":%s,"cfg_games":%s,"cfg_white":%s,"cfg_black":%s,"frozen":%s,"caps":%s,"device":%s}\n' "$_ok" "$(jesc "$_lock")" "$_files" "$(getprop sys.boot_completed 2>/dev/null)" "$_nic" "$_ng" "$_nw" "$_nb" "$_nf" "$_caps" "$_dev"
+  printf '{\n'
+  printf '    "commands":"%s",\n' "${_ok# }"
+  printf '    "session_lock":"%s",\n' "$(jesc "$_lock")"
+  printf '    "files":"%s",\n' "${_files# }"
+  printf '    "boot_completed":"%s",\n' "$(getprop sys.boot_completed 2>/dev/null)"
+  printf '    "icons_cached":%s,\n' "$_nic"
+  printf '    "cfg_games":%s,\n' "$_ng"
+  printf '    "cfg_white":%s,\n' "$_nw"
+  printf '    "cfg_black":%s,\n' "$_nb"
+  printf '    "frozen":%s,\n' "$_nf"
+  printf '    "caps":{\n'
+  jbody '        ' "$_caps"
+  printf '    },\n'
+  printf '    "device":{\n'
+  jbody '        ' "$_dev"
+  printf '    }\n}\n'
 }
 
 case "$1" in

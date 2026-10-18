@@ -77,6 +77,11 @@ body::before{ /* faint stars, static, no animation */
   .track,.track::after{transition:none}
 }
 .grid{display:grid;gap:14px}
+/* Grid items default to min-width:auto, so a wide child (the log table's
+   min-content width, driven by long package names) stretches the whole card
+   past the viewport and makes the page scroll sideways on phones. Pinning the
+   floor to 0 keeps the card inside .main and lets the table scroll instead. */
+.grid>*{min-width:0}
 .grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .card{background:var(--bg-card);border:1px solid var(--blue-border);border-radius:var(--radius-card);
   padding:18px;box-shadow:0 8px 28px rgba(2,8,22,.45)}
@@ -122,9 +127,13 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--blue-brigh
 .switch input:checked+.track{background:rgba(59,130,246,.45);border-color:var(--blue-bright)}
 .switch input:checked+.track::after{left:23px;background:#fff}
 .switch input:focus-visible+.track{outline:2px solid var(--blue-bright)}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:auto}
 th{text-align:left;color:var(--text-muted);font-weight:600;padding:8px;border-bottom:1px solid var(--blue-border);white-space:nowrap}
-td{padding:9px 8px;border-bottom:1px solid rgba(147,197,253,.08);vertical-align:top}
+/* Package names can be long single tokens ("com.customstickermaker.whatsapp…").
+   Without this they set the table's min-content width, which spills out of the
+   card and scrolls the whole page sideways. Breaking inside the token keeps the
+   table inside its card at every width. */
+td{padding:9px 8px;border-bottom:1px solid rgba(147,197,253,.08);vertical-align:top;overflow-wrap:anywhere}
 .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
 .b-green{background:rgba(52,211,153,.14);color:var(--success);border:1px solid rgba(52,211,153,.35)}
 .b-blue{background:rgba(59,130,246,.14);color:var(--blue-soft);border:1px solid var(--blue-border)}
@@ -163,7 +172,11 @@ td{padding:9px 8px;border-bottom:1px solid rgba(147,197,253,.08);vertical-align:
     display:flex;flex-direction:column;align-items:center;gap:3px;min-height:52px;justify-content:center;border-radius:10px}
   .bottomnav button.active{color:var(--blue-soft)}
   .setrow select,.setrow input{width:150px}
+  /* The table is its own scroll container on phones: rows stay on one line
+     (readable) and only the table scrolls, never the page. */
   table{display:block;overflow-x:auto}
+  table th,table td{white-space:nowrap}
+  table td{overflow-wrap:normal}
 }
 @media(min-width:761px){
   .modal{align-items:center}.sheet{border-radius:20px}

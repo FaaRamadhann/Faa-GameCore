@@ -32,6 +32,10 @@ cat > "$T/bin/cmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "$STUB_PM_LOG"
 if [ "$1" = "package" ] && [ "$2" = "enable" ]; then
+  # same adb_data_file stdin restriction as pm (see the pm stub)
+  if [ -f /dev/stdin ]; then
+    echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2
+  fi
   case "${@: -1}" in com.gone.app|com.flaky.app) exit 1 ;; esac
   grep -v "^package:${@: -1}$" "$STUB_DISABLED" 2>/dev/null > "$STUB_DISABLED.tmp" || true
   mv "$STUB_DISABLED.tmp" "$STUB_DISABLED" 2>/dev/null || true
@@ -52,6 +56,14 @@ if [ "$1" = "disable-user" ]; then
   printf 'package:%s\n' "${@: -1}" >> "$STUB_DISABLED"; exit 0
 fi
 if [ "$1" = "enable" ]; then
+  # ROM reality (measured on-device): pm/cmd are app_process wrappers in the
+  # zygote domain, which cannot READ adb_data_file. FGC state lives under
+  # /data/adb/fgc, so an inherited stdin pointing at frozen.txt makes pm answer
+  # "Failed transaction (2147483646)" and every unfreeze fails. Any regular
+  # file on stdin stands in for that here.
+  if [ -f /dev/stdin ]; then
+    echo "cmd: Failure calling service package: Failed transaction (2147483646)" >&2; exit 2
+  fi
   case "${@: -1}" in
     com.gone.app|com.flaky.app)
       echo "cmd: Failure calling service package: Failed transaction (2147483646)"; exit 1 ;;
@@ -94,6 +106,17 @@ if [ "$1" = "list" ] && [ "$3" = "-d" ]; then
     _n=$(cat "$STUB_PM_LOG.ecount" 2>/dev/null); [ -n "$_n" ] || _n=0
     _n=$((_n+1)); printf '%s' "$_n" > "$STUB_PM_LOG.ecount"
     [ "$_n" -le 1 ] && exit 0
+  fi
+  # The package is really disabled but the snapshot does not say so yet: models a
+  # `pm disable-user` that is still in flight (daemon killed mid-freeze). The
+  # first snapshot hides it, later ones show it — recovery must catch it on its
+  # second pass, otherwise the app stays disabled with an empty journal.
+  if [ "$STUB_LIST_HIDE_1ST" = "1" ]; then
+    _n=$(cat "$STUB_PM_LOG.hcount" 2>/dev/null); [ -n "$_n" ] || _n=0
+    _n=$((_n+1)); printf '%s' "$_n" > "$STUB_PM_LOG.hcount"
+    if [ "$_n" -le 1 ]; then
+      grep -v -F "package:${STUB_HIDE_PKG}" "$STUB_DISABLED" 2>/dev/null; exit 0
+    fi
   fi
   cat "$STUB_DISABLED" 2>/dev/null; exit 0
 fi
@@ -340,6 +363,15 @@ if [ "$(cat "$T/data/state/icons/com.test.game.ver" 2>/dev/null)" = "|g3" ]; the
 out=$($CLI diag)
 [[ "$out" == *'"javahlp":"yes"'* ]] && { echo "PASS caps javahlp"; pass=$((pass+1)); } || { echo "FAIL caps javahlp"; fail=$((fail+1)); }
 out=$($CLI diag); ck "diag runs" 'session_lock' "$out"
+# status/diag are read by humans in a terminal too: pretty-print them, and keep
+# them machine-readable for the WebUI (JSON.parse on the same bytes).
+for _c in status diag; do
+  out=$($CLI $_c)
+  printf '%s' "$out" | python -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
+    && { echo "PASS $_c valid JSON"; pass=$((pass+1)); } || { echo "FAIL $_c valid JSON"; fail=$((fail+1)); }
+  printf '%s\n' "$out" | grep -q '^    "' \
+    && { echo "PASS $_c pretty-printed"; pass=$((pass+1)); } || { echo "FAIL $_c pretty-printed"; fail=$((fail+1)); }
+done
 out=$($CLI list logs); ck "logs written" 'SESSION_STARTED' "$out"
 # clearlog: honest, verified truncation — pure JSON, empty afterwards, idempotent
 out=$($CLI clearlog); ck "clearlog ok" '{"ok":true}' "$out"
@@ -455,6 +487,16 @@ printf 'u0_a1 123 456 com.test.game\n' > "$T/ps.txt"
 bash "$M/core/recovery.sh" >/dev/null 2>&1
 if grep -qx 'com.live.app' "$T/data/state/frozen.txt" && ! grep -q 'enable.*com.live.app' "$T/pm.log"; then echo "PASS recovery keeps live session frozen"; pass=$((pass+1)); else echo "FAIL recovery keeps live session frozen"; fail=$((fail+1)); fi
 rm -f "$T/data/state/session.lock"; : > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"; : > "$T/pm.log"
+# A daemon SIGKILLed mid-freeze leaves a `pm disable-user` in flight. Recovery
+# starts, the app still looks enabled so the journal entry is retired, and THEN
+# the disable lands — app disabled with an empty journal and nothing left to
+# retry it. Recovery keeps a copy of the retired entries and re-checks them.
+printf 'com.strag.app\n' > "$T/data/state/frozen.txt"
+printf 'package:com.strag.app\n' > "$T/disabled.txt"
+: > "$T/pm.log"
+STUB_LIST_HIDE_1ST=1 STUB_HIDE_PKG=com.strag.app bash "$M/core/recovery.sh" >/dev/null 2>&1
+if grep -q 'enable.*com.strag.app' "$T/pm.log" && ! grep -qx 'package:com.strag.app' "$T/disabled.txt" 2>/dev/null; then echo "PASS late disable undone by recovery"; pass=$((pass+1)); else echo "FAIL late disable (log=$(tr '\n' ' ' < "$T/pm.log"))"; fail=$((fail+1)); fi
+: > "$T/data/state/frozen.txt"; : > "$T/disabled.txt"; : > "$T/pm.log"
 # freeze_system toggle (Awaken-only, system-type): ON freezes, OFF skips.
 # Blacklist <-> Awaken <-> toggle form one connected system.
 out=$($CLI set freeze_system true); ck "freeze_system on" '"ok":true' "$out"

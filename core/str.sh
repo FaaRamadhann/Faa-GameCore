@@ -38,11 +38,20 @@ _FGC_NL='
 # fgc_run_timed <secs> <cmd...> — guard against hanging Android commands
 # (dumpsys/pm/cmd occasionally block for minutes under system contention).
 # Uses `timeout` when present, else direct exec. Exit status passes through.
+# stdin is ALWAYS /dev/null. pm/cmd/am/dumpsys are app_process wrappers running
+# in the zygote domain, which CANNOT read files labelled adb_data_file — and
+# every FGC state file lives under /data/adb/fgc (adb_data_file). Unfreeze loops
+# read frozen.txt, so that file was inherited as stdin by `pm enable`; the read
+# failed and pm answered "Failed transaction (2147483646)" (rc=2), so the app
+# stayed disabled after the game closed. Measured on-device:
+#   stdin=/data/adb/fgc/state/x  -> rc=2  (adb_data_file)
+#   stdin=/data/local/tmp/x      -> rc=0  (shell_data_file)
+#   stdin=/dev/null              -> rc=0
 # No pipes are created here.
 fgc_run_timed() {
   _t="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then timeout "$_t" "$@"
-  else "$@"; fi
+  if command -v timeout >/dev/null 2>&1; then timeout "$_t" "$@" < /dev/null
+  else "$@" < /dev/null; fi
 }
 # fgc_snap <file> <cmd...> — run cmd, write its stdout to <file>, keep its rc.
 # NEVER redirect a Java tool's stdout straight to a file under /data/adb:
@@ -54,7 +63,9 @@ fgc_run_timed() {
 # shell (pipe is fine) and writing the file ourselves keeps output AND status.
 fgc_snap() {
   _sf="$1"; shift
-  _so="$("$@" 2>/dev/null)"; _src=$?
+  # stdin from /dev/null for the same reason as fgc_run_timed: app_process
+  # commands fail ("Failed transaction") when stdin is a regular file.
+  _so="$("$@" < /dev/null 2>/dev/null)"; _src=$?
   if [ -n "$_so" ]; then printf '%s\n' "$_so" > "$_sf" 2>/dev/null
   else : > "$_sf" 2>/dev/null; fi
   return "$_src"

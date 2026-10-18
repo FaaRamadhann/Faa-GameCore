@@ -76,6 +76,8 @@ su -c 'fgc diag'                       # JSON: kapabilitas, device, state
 
 `session-start` hanya menerima paket yang **terdaftar di gamelist** (selain itu `not-a-game`). `session-end` selalu aman. Berguna untuk trigger eksternal: Tasker, MacroDroid, Zygisk/LSPosed companion.
 
+`status` dan `diag` mencetak JSON **pretty** (satu key per baris) supaya enak dibaca di terminal; WebUI mem-parse byte yang sama, jadi tidak ada format terpisah untuk mesin dan manusia.
+
 ## Struktur repo
 
 ```

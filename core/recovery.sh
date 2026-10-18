@@ -44,7 +44,26 @@ fgc_recovery() {
   if [ "$_live_sess" = "1" ]; then
     fgc_log "RECOVERY" "$_g" "unfreeze" "skipped-session-active" ""
   else
+    # A daemon killed mid-freeze (LMK SIGKILL, or the user swiping it away) can
+    # have a `pm disable-user` already in flight. That disable lands AFTER the
+    # pass below has drained the journal — the entry was retired because the app
+    # still looked enabled — and the app stays disabled with an EMPTY journal,
+    # which is the one state with no way back. Keep a copy of the entries we are
+    # about to retire and re-check them once the dust settles.
+    _prev="$FGC_STATE/.frozen_prev"
+    rm -f "$_prev" 2>/dev/null
+    [ -s "$FGC_STATE/frozen.txt" ] && cp "$FGC_STATE/frozen.txt" "$_prev" 2>/dev/null
     fgc_unfreeze_all "RECOVERY"
+    if [ -s "$_prev" ]; then
+      # Re-arm the entries we just retired and run the SAME verified pass again:
+      # a package still enabled is retired again, one that is provably gone stays
+      # gone, and one whose disable landed late is restored.
+      sleep 2
+      sort -u "$_prev" "$FGC_STATE/frozen.txt" 2>/dev/null > "$_prev.new"
+      mv "$_prev.new" "$FGC_STATE/frozen.txt" 2>/dev/null
+      fgc_unfreeze_all "RECOVERY"
+      rm -f "$_prev" "$_prev.new" 2>/dev/null
+    fi
   fi
   # config.json: upgrade to the canonical pretty layout (readable + hand-editable)
   # plus any key a newer release added. Data-preserving — the helper verifies
