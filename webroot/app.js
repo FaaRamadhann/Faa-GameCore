@@ -83,7 +83,14 @@
     return p ? p.id + " - " + p.name : String(id);
   }
   function render() {
-    renderChips(); renderHome(); renderGames(); renderLists(); renderLogs(); renderSettings();
+    // Do not rebuild six pages on every refresh. On low-end WebViews the hidden
+    // package lists are still real DOM work; only the visible page needs paint.
+    renderChips();
+    if (state.page === "home") renderHome();
+    else if (state.page === "games") renderGames();
+    else if (state.page === "white" || state.page === "black") renderLists();
+    else if (state.page === "logs") renderLogs();
+    else if (state.page === "settings") renderSettings();
   }
   function renderChips() {
     var s = state.status;
@@ -148,10 +155,6 @@
           return "<tr><td class='mono'>" + esc(l.ts) + "</td><td><span class='badge " + badge(l.ev) + "'>" + esc(l.ev) + "</span></td><td class='mono'>" + esc(l.pkg || "—") + "</td><td>" + esc(l.res || "") + "</td></tr>";
         }).join("") + "</table>"
       : '<div class="empty"><div class="big">Belum ada aktivitas</div>Log masih kosong — bukan data palsu, sesi akan tercatat di sini.</div>';
-  }
-  function initials(label) {
-    var s = String(label == null ? "?" : label).trim();
-    return (s.charAt(0) || "?").toUpperCase();
   }
   function avatarHue(pkg) {
     var h = 0, i;
@@ -269,7 +272,7 @@
         if (url) { iconCache[im.dataset.pkg] = url; showIcon(im, url); continue; }
         var t = parseInt(im.dataset.tries || "0", 10) + 1;
         im.dataset.tries = String(t);
-        if (t >= 4) { im.dataset.done = "1"; }   // give up: the letter stands
+      if (t >= 4) { im.dataset.done = "1"; showStub(im); }   // stable stub, never a letter
         else failed.push(im);
       }
       if (failed.length) requeueLater(failed);
@@ -319,14 +322,22 @@
     // (otherwise the gradient peeks through the icon's transparent corners and
     // the icon looks boxed instead of full).
     if (img.parentNode) img.parentNode.style.background = "transparent";
-    var letter = img.parentNode && img.parentNode.querySelector("span");
-    if (letter) letter.style.display = "none";
+    var stub = img.parentNode && img.parentNode.querySelector(".iconstub");
+    if (stub) stub.style.display = "none";
+  }
+  function showStub(img) {
+    img.dataset.done = "1";
+    img.removeAttribute("src");
+    img.style.display = "none";
+    var stub = img.parentNode && img.parentNode.querySelector(".iconstub");
+    if (stub) { stub.style.display = "block"; stub.setAttribute("aria-hidden", "true"); }
+    if (img.parentNode) img.parentNode.style.background = "";
   }
   function appRow(name, pkg, extra, rightEl) {
     var row = document.createElement("div"); row.className = "appitem";
     var ic = document.createElement("div"); ic.className = "appicon";
-    var letter = document.createElement("span"); letter.textContent = initials(name);
-    ic.appendChild(letter);
+    var stub = document.createElement("span"); stub.className = "iconstub"; stub.setAttribute("aria-hidden", "true");
+    ic.appendChild(stub);
     try { ic.style.background = avatarHue(pkg); } catch (e) {}
     if (backend && backend.mode === "device") {
       var img = document.createElement("img");
@@ -340,9 +351,8 @@
         img.style.display = "none";
         if (img.dataset.native) {
           img.dataset.native = "";
-          // Put the letter avatar back (it was hidden for the native icon) and
-          // let the CLI base64 batch try once before we settle on the letter.
-          var sp = img.parentNode && img.parentNode.querySelector("span");
+            // Restore the neutral stub while the CLI base64 path retries.
+            var sp = img.parentNode && img.parentNode.querySelector(".iconstub");
           if (sp) sp.style.display = "";
           if (img.parentNode) img.parentNode.style.background = "";
           queueIcon(img);
@@ -360,7 +370,7 @@
     return row;
   }
   /* ---------- UI capabilities: adapt to host, screen and device ---------- */
-  var UI_VERSION = "1.3.6";
+  var UI_VERSION = "1.3.8";
   var UI = {
     observer: ("IntersectionObserver" in window),
     storageOK: (function () {
@@ -696,7 +706,9 @@
   /* ---------- data ---------- */
   function loadPackages() {
     // Slow path (pm/dumpsys per app, blocking sync exec): NOT on every refresh.
-    return backend.packages().then(function (pkgs) {
+    // Start it in a later task so the first page can paint before package
+    // discovery begins on old synchronous bridges.
+    return new Promise(function (resolve) { setTimeout(resolve, 0); }).then(function () { return backend.packages(); }).then(function (pkgs) {
       state.pkgs = pkgs || [];
       state.pkgTypes = {};
       state.pkgVers = {};
