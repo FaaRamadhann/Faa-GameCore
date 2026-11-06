@@ -44,6 +44,16 @@
 
   var execSeq = 0;
 
+  // A few hosts expose exec synchronously. Starting several commands from one
+  // Promise.all then blocks the WebView before it can repaint. One macrotask
+  // yield per command keeps input/paint responsive without serialising the
+  // actual async callback bridge.
+  function yieldCall(fn) {
+    return new Promise(function (resolve, reject) {
+      setTimeout(function () { try { resolve(fn()); } catch (e) { reject(e); } }, 0);
+    });
+  }
+
   // Kitsune Mask / Magisk / KernelSU all expose the same native interface:
   //   exec(cmd)          -> ShellUtils.fastCmd, which returns ONLY THE LAST LINE
   //   exec(cmd, cbName)  -> the host calls cbName(code, stdout, stderr)
@@ -86,10 +96,10 @@
       });
     }
     br.exec = function (cmd) {
-      if (isWx) return toPromise(function () { return obj.exec(cmd); }).then(pickOut);
+      if (isWx) return yieldCall(function () { return obj.exec(cmd); }).then(pickOut);
       return mode().then(function (m) {
-        if (m === "sync") { br.degraded = true; return toPromise(function () { return obj.exec(cmd); }).then(pickOut); }
-        return execCb(cmd);
+        if (m === "sync") { br.degraded = true; return yieldCall(function () { return obj.exec(cmd); }).then(pickOut); }
+        return yieldCall(function () { return execCb(cmd); }).then(function (p) { return p; });
       });
     };
     return br;

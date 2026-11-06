@@ -18,7 +18,7 @@ EXECUTABLES = {"customize.sh", "uninstall.sh", "service.sh", "action.sh",
 # What ships is the module, nothing else. Dev-only trees (tests/tools/docs) and
 # build inputs must never reach the zip: they are dead weight on the device and
 # the Magisk installer has no use for them.
-EXCLUDE_DIRS = {"temp", "tests", "tools", "docs", "build", "__pycache__", ".git",
+EXCLUDE_DIRS = {"temp", "tests", "tools", "docs", "build", "WEB", "__pycache__", ".git",
                 ".github", "logs", "state"}
 EXCLUDE_FILES = {".DS_Store", "Thumbs.db", ".gitignore", ".gitattributes",
                  "build.py", "README.md"}
